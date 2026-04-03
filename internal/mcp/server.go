@@ -136,6 +136,10 @@ func (s *Server) HandleStdio(ctx context.Context, in io.Reader, out io.Writer) {
 			enc.Encode(errResponse(nil, RPCParseError, err.Error()))
 			continue
 		}
+		// JSON-RPC 2.0: notifications have no id — never respond to them.
+		if req.ID == nil {
+			continue
+		}
 		enc.Encode(s.dispatch(req))
 	}
 }
@@ -149,6 +153,8 @@ func (s *Server) dispatch(req Request) Response {
 		return s.handleToolsList(req)
 	case "tools/call":
 		return s.handleToolsCall(req)
+	case "ping":
+		return okResponse(req.ID, map[string]any{})
 	default:
 		return errResponse(req.ID, RPCMethodNotFound, "method not found: "+req.Method)
 	}
