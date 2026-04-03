@@ -27,6 +27,7 @@ func main() {
 	listenAddr   := flag.String("listen", ":8000", "HTTP transport listen address")
 	mcpAddr      := flag.String("mcp-addr", ":8080", "MCP server listen address")
 	mcpStdio     := flag.Bool("mcp-stdio", false, "also run MCP on stdin/stdout")
+	stdioOnly    := flag.Bool("stdio-only", false, "run MCP stdio only (no HTTP/SSE servers — for Desktop integration)")
 	doSeed       := flag.Bool("seed", false, "seed infrastructure nodes from flags")
 	seedUser     := flag.String("seed-user", "sam", "username for seed node")
 	seedWS       := flag.String("seed-ws", "hp-laptop", "workstation name for seed node")
@@ -76,6 +77,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	mcpSrv := mcp.NewServer(rt)
+
+	if *stdioOnly {
+		// Desktop integration: run MCP stdio only, block until stdin closes.
+		log.Println("mcp: stdio-only mode")
+		mcpSrv.HandleStdio(ctx, os.Stdin, os.Stdout)
+		return
+	}
+
 	// --- Start HTTP transport ---
 	httpSrv := &http.Server{
 		Addr:    *listenAddr,
@@ -88,8 +98,7 @@ func main() {
 		}
 	}()
 
-	// --- Start MCP server ---
-	mcpSrv := mcp.NewServer(rt)
+	// --- Start MCP SSE server ---
 	mcpHTTP := &http.Server{
 		Addr:    *mcpAddr,
 		Handler: mcpSrv.Handler(),
@@ -101,7 +110,7 @@ func main() {
 		}
 	}()
 
-	// --- Optional: MCP over stdin/stdout ---
+	// --- Optional: also run MCP over stdin/stdout ---
 	if *mcpStdio {
 		go func() {
 			log.Println("mcp: starting stdio transport")
