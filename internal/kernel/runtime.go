@@ -88,9 +88,11 @@ func (rt *Runtime) Apply(env graph.Envelope) (graph.EvalResult, error) {
 	}
 
 	seq := rt.logSeq.Add(1)
+	now := time.Now().UTC()
 	persisted := graph.PersistedRewrite{
 		Envelope:  env,
-		AppliedAt: time.Now().UTC(),
+		AppliedAt: now,
+		Timestamp: now,
 		LogSeq:    seq,
 	}
 	if err := rt.store.Append([]graph.PersistedRewrite{persisted}); err != nil {
@@ -125,9 +127,11 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 	persisted := make([]graph.PersistedRewrite, len(envelopes))
 	for i, env := range envelopes {
 		seq := rt.logSeq.Add(1)
+		ts := now.Add(time.Duration(i) * time.Nanosecond)
 		persisted[i] = graph.PersistedRewrite{
 			Envelope:  env,
-			AppliedAt: now.Add(time.Duration(i) * time.Nanosecond),
+			AppliedAt: ts,
+			Timestamp: ts,
 			LogSeq:    seq,
 		}
 	}

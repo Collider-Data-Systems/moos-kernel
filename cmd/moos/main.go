@@ -19,18 +19,22 @@ import (
 	"moos/kernel/internal/transport"
 )
 
-const tDay = 153
+// tDay computes current T-day: days since T=0 (2025-11-01 00:00 CEST = 2025-10-31 23:00 UTC).
+func tDay() int {
+	t0 := time.Date(2025, 10, 31, 23, 0, 0, 0, time.UTC)
+	return int(time.Now().UTC().Sub(t0).Hours() / 24)
+}
 
 func main() {
 	ontologyPath := flag.String("ontology", "", "path to ontology.json (ffs0/kb/superset/ontology.json)")
-	logPath      := flag.String("log", "", "path to JSONL rewrite log (empty = in-memory)")
-	listenAddr   := flag.String("listen", ":8000", "HTTP transport listen address")
-	mcpAddr      := flag.String("mcp-addr", ":8080", "MCP server listen address")
-	mcpStdio     := flag.Bool("mcp-stdio", false, "also run MCP on stdin/stdout")
-	stdioOnly    := flag.Bool("stdio-only", false, "run MCP stdio only (no HTTP/SSE servers — for Desktop integration)")
-	doSeed       := flag.Bool("seed", false, "seed infrastructure nodes from flags")
-	seedUser     := flag.String("seed-user", "sam", "username for seed node")
-	seedWS       := flag.String("seed-ws", "hp-laptop", "workstation name for seed node")
+	logPath := flag.String("log", "", "path to JSONL rewrite log (empty = in-memory)")
+	listenAddr := flag.String("listen", ":8000", "HTTP transport listen address")
+	mcpAddr := flag.String("mcp-addr", ":8080", "MCP server listen address")
+	mcpStdio := flag.Bool("mcp-stdio", false, "also run MCP on stdin/stdout")
+	stdioOnly := flag.Bool("stdio-only", false, "run MCP stdio only (no HTTP/SSE servers — for Desktop integration)")
+	doSeed := flag.Bool("seed", false, "seed infrastructure nodes from flags")
+	seedUser := flag.String("seed-user", "sam", "username for seed node")
+	seedWS := flag.String("seed-ws", "hp-laptop", "workstation name for seed node")
 	flag.Parse()
 
 	// --- Load registry ---
@@ -77,11 +81,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mcpSrv := mcp.NewServer(rt)
-
+	// --- stdio-only mode: skip HTTP/SSE, serve MCP on stdin/stdout, exit when stdin closes ---
 	if *stdioOnly {
-		// Desktop integration: run MCP stdio only, block until stdin closes.
 		log.Println("mcp: stdio-only mode")
+		mcpSrv := mcp.NewServer(rt)
 		mcpSrv.HandleStdio(ctx, os.Stdin, os.Stdout)
 		return
 	}
@@ -89,7 +92,7 @@ func main() {
 	// --- Start HTTP transport ---
 	httpSrv := &http.Server{
 		Addr:    *listenAddr,
-		Handler: transport.NewServer(rt, registry, tDay).Handler(),
+		Handler: transport.NewServer(rt, registry, tDay()).Handler(),
 	}
 	go func() {
 		log.Printf("transport: listening on %s", *listenAddr)
@@ -98,7 +101,8 @@ func main() {
 		}
 	}()
 
-	// --- Start MCP SSE server ---
+	// --- Start MCP server ---
+	mcpSrv := mcp.NewServer(rt)
 	mcpHTTP := &http.Server{
 		Addr:    *mcpAddr,
 		Handler: mcpSrv.Handler(),
@@ -110,7 +114,7 @@ func main() {
 		}
 	}()
 
-	// --- Optional: also run MCP over stdin/stdout ---
+	// --- Optional: MCP over stdin/stdout ---
 	if *mcpStdio {
 		go func() {
 			log.Println("mcp: starting stdio transport")
@@ -145,7 +149,7 @@ func seedInfrastructure(rt *kernel.Runtime, user, ws string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	nodes := []struct {
-		env graph.Envelope
+		env  graph.Envelope
 		desc string
 	}{
 		{

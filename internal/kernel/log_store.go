@@ -85,6 +85,12 @@ func (l *LogStore) ReadAll() ([]graph.PersistedRewrite, error) {
 		if err := json.Unmarshal(line, &entry); err != nil {
 			return entries, fmt.Errorf("log_store: unmarshal line: %w", err)
 		}
+		if entry.Timestamp.IsZero() {
+			entry.Timestamp = entry.AppliedAt
+		}
+		if entry.AppliedAt.IsZero() {
+			entry.AppliedAt = entry.Timestamp
+		}
 		entries = append(entries, entry)
 	}
 	if err := scanner.Err(); err != nil {

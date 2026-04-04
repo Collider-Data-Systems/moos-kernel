@@ -60,5 +60,6 @@ type EvalResult struct {
 type PersistedRewrite struct {
 	Envelope  Envelope  `json:"envelope"`
 	AppliedAt time.Time `json:"applied_at"`
+	Timestamp time.Time `json:"timestamp,omitempty"`
 	LogSeq    int64     `json:"log_seq"`
 }

@@ -133,11 +133,13 @@ func portColorFromName(port string) graph.PortColor {
 		return graph.ColorTransport
 	case "computes-on", "computed-by":
 		return graph.ColorCompute
-	case "persisted-in", "persists", "synced-via", "sync-target", "provides-kb", "kb-source":
+	case "persisted-in", "persists", "synced-via", "sync-target", "provides-kb", "kb-source",
+		"produces", "produced-by", "asserts", "asserted-in", "tagged", "tagged-in":
 		return graph.ColorStorage
 	case "bound-to":
 		return "" // ambiguous: compute or storage depending on src node type — skip color check
-	case "participates", "participated-by", "focus", "on":
+	case "participates", "participated-by", "focus", "on",
+		"anchors", "anchor", "causes", "summarizes", "daily-summary", "depends-on", "depended-by", "participant":
 		return graph.ColorWorkflow
 	case "projected-to", "rendered-as", "displayed-as":
 		return graph.ColorProjection

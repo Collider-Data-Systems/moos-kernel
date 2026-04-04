@@ -149,13 +149,17 @@ func (s *Server) dispatch(req Request) Response {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
+	case "ping":
+		return okResponse(req.ID, map[string]any{})
 	case "tools/list":
 		return s.handleToolsList(req)
 	case "tools/call":
 		return s.handleToolsCall(req)
-	case "ping":
-		return okResponse(req.ID, map[string]any{})
 	default:
+		// Silently ignore notification-style methods that may arrive with an id.
+		if len(req.Method) > 14 && req.Method[:14] == "notifications/" {
+			return okResponse(req.ID, map[string]any{})
+		}
 		return errResponse(req.ID, RPCMethodNotFound, "method not found: "+req.Method)
 	}
 }

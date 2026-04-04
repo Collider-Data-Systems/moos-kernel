@@ -21,11 +21,15 @@ type Server struct {
 	write    kernel.WriteKernel
 	observe  kernel.ObservableKernel
 	registry *operad.Registry
-	tDay     int
 }
 
-func NewServer(rt *kernel.Runtime, registry *operad.Registry, tDay int) *Server {
-	return &Server{inspect: rt, write: rt, observe: rt, registry: registry, tDay: tDay}
+// tDay0 is T=0 as UTC: 2025-11-01 00:00 CEST = 2025-10-31 23:00 UTC.
+var tDay0 = time.Date(2025, 10, 31, 23, 0, 0, 0, time.UTC)
+
+func currentTDay() int { return int(time.Now().UTC().Sub(tDay0).Hours() / 24) }
+
+func NewServer(rt *kernel.Runtime, registry *operad.Registry, _ int) *Server {
+	return &Server{inspect: rt, write: rt, observe: rt, registry: registry}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -58,7 +62,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"log_len": s.inspect.LogLen(),
-		"t_day":   s.tDay,
+		"t_day":   currentTDay(),
 	})
 }
 
