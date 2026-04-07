@@ -129,7 +129,8 @@ func portColorFromName(port string) graph.PortColor {
 		return graph.ColorAuth
 	case "owns", "child", "hosts", "hosted-on", "contains", "contained-in", "binds":
 		return graph.ColorTopology
-	case "exposes", "exposed-by", "connects-to", "connected-to", "implements", "implemented-by":
+	case "exposes", "exposed-by", "connects-to", "connected-to", "implements", "implemented-by",
+		"routes-to", "routed-from", "shard-of", "sharded-by":
 		return graph.ColorTransport
 	case "computes-on", "computed-by":
 		return graph.ColorCompute
@@ -139,7 +140,8 @@ func portColorFromName(port string) graph.PortColor {
 	case "bound-to":
 		return "" // ambiguous: compute or storage depending on src node type — skip color check
 	case "participates", "participated-by", "focus", "on",
-		"anchors", "anchor", "causes", "summarizes", "daily-summary", "depends-on", "depended-by", "participant":
+		"anchors", "anchor", "causes", "summarizes", "daily-summary", "depends-on", "depended-by", "participant",
+		"triggers", "triggered-by", "guards", "guarded-by", "emits", "emitted-by", "watches":
 		return graph.ColorWorkflow
 	case "projected-to", "rendered-as", "displayed-as":
 		return graph.ColorProjection
