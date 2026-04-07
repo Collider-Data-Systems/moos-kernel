@@ -10,6 +10,7 @@ import (
 	"moos/kernel/internal/fold"
 	"moos/kernel/internal/graph"
 	"moos/kernel/internal/operad"
+	"moos/kernel/internal/reactive"
 )
 
 const subscriberBufferSize = 64
@@ -73,7 +74,7 @@ func (rt *Runtime) Apply(env graph.Envelope) (graph.EvalResult, error) {
 	defer rt.mu.Unlock()
 
 	// For MUTATE, pass the current node to operad for authority check
-	if env.RewriteType == graph.MUTATE {
+	if env.RewriteType == graph.MUTATE && rt.registry != nil {
 		node, ok := rt.state.Nodes[env.TargetURN]
 		if ok {
 			if err := rt.registry.ValidateMUTATE(env, node); err != nil {
@@ -102,6 +103,7 @@ func (rt *Runtime) Apply(env graph.Envelope) (graph.EvalResult, error) {
 	rt.state = next
 	rt.log = append(rt.log, persisted)
 	rt.broadcast(persisted)
+	rt.runReactive(persisted)
 
 	return result, nil
 }
@@ -270,6 +272,57 @@ func (rt *Runtime) broadcast(pr graph.PersistedRewrite) {
 			// Slow subscriber: drop rather than block the kernel
 		}
 	}
+}
+
+// runReactive evaluates the Watch/React/Guard engine against a just-applied rewrite
+// and applies any resulting proposals. Called with rt.mu already held.
+// Proposals are applied at depth-1 only — reactive proposals do not trigger further reactions.
+func (rt *Runtime) runReactive(trigger graph.PersistedRewrite) {
+	// Snapshot state at the time of the trigger for engine evaluation.
+	snapshot := rt.state
+	eng := reactive.Engine{State: &snapshot}
+	proposals := eng.Evaluate(trigger)
+
+	for _, proposal := range proposals {
+		rt.applyReactiveLocked(proposal)
+	}
+}
+
+// applyReactiveLocked applies a single envelope while the write lock is already held.
+// Used exclusively for reactive proposals — does NOT trigger further reactive evaluation.
+func (rt *Runtime) applyReactiveLocked(env graph.Envelope) {
+	// Operad validation (registry is read-only, no extra locking needed).
+	if err := rt.validate(env); err != nil {
+		return // drop invalid reactive proposals silently
+	}
+	if env.RewriteType == graph.MUTATE && rt.registry != nil {
+		if node, ok := rt.state.Nodes[env.TargetURN]; ok {
+			if err := rt.registry.ValidateMUTATE(env, node); err != nil {
+				return
+			}
+		}
+	}
+
+	next, _, err := fold.Evaluate(rt.state, env)
+	if err != nil {
+		return // skip (e.g. ErrNodeExists for idempotent proposals)
+	}
+
+	seq := rt.logSeq.Add(1)
+	now := time.Now().UTC()
+	persisted := graph.PersistedRewrite{
+		Envelope:  env,
+		AppliedAt: now,
+		Timestamp: now,
+		LogSeq:    seq,
+	}
+	if err := rt.store.Append([]graph.PersistedRewrite{persisted}); err != nil {
+		return // persist failure: drop, don't corrupt in-memory state
+	}
+
+	rt.state = next
+	rt.log = append(rt.log, persisted)
+	rt.broadcast(persisted)
 }
 
 // validate dispatches to the appropriate operad validator by rewrite type.
