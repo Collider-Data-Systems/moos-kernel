@@ -1,8 +1,8 @@
 # moos-kernel
 
 Canonical reference: `ffs0/kb/research/20260408-foundation-t158.md`
-Ontology: `ffs0/kb/superset/ontology.json` (v3.3)
-Gate closed: T=159
+Ontology: `ffs0/kb/superset/ontology.json` (v3.5 — 38 node types, 18 rewrite categories)
+Gate closed: T=160
 
 ---
 
@@ -37,7 +37,9 @@ internal/graph      — pure types (no IO): Node, Relation, Property, Rewrite, G
 internal/fold       — pure catamorphism: Evaluate, Replay, EvaluateProgram
 internal/operad     — type system: Registry (WF01-WF18), ValidateLINK, ValidateMUTATE
 internal/kernel     — effect layer: Runtime, Store, LogStore, MemStore
-internal/transport  — HTTP adapter (13 routes)
+internal/reactive   — Watch/React/Guard engine (WF17 pattern-match + proposals)
+internal/hdc        — hyperdimensional computing: encoding, spectral, fiber, crosswalk, live index
+internal/transport  — HTTP adapter (31 routes incl. 13 /hdc/* endpoints)
 internal/mcp        — MCP JSON-RPC 2.0 (SSE + stdio)
 cmd/moos            — entry point
 ```
