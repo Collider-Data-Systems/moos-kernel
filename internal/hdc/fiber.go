@@ -280,7 +280,7 @@ func shardPrefixToKernelMap(state graph.GraphState, kernels []graph.URN) map[str
 	}
 
 	out := make(map[string]graph.URN)
-	for _, node := range state.Nodes {
+	for shardURN, node := range state.Nodes {
 		if node.TypeID != "shard_rule" {
 			continue
 		}
@@ -292,8 +292,13 @@ func shardPrefixToKernelMap(state graph.GraphState, kernels []graph.URN) map[str
 		if !ok || strings.TrimSpace(prefix) == "" {
 			continue
 		}
-		if kernelURN, hit := kernelSet[prefix]; hit {
-			out[prefix] = kernelURN
+		
+		for _, rel := range state.Relations {
+			if rel.SrcURN == shardURN && rel.SrcPort == "routes-to" {
+				if kernelURN, hit := kernelSet[rel.TgtURN.String()]; hit {
+					out[prefix] = kernelURN
+				}
+			}
 		}
 	}
 	return out
