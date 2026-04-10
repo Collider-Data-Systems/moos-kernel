@@ -65,7 +65,40 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 }
 
 // ValidateMUTATE checks mutability, WF scope, and authority constraints on a MUTATE envelope.
+//
+// Two paths:
+//  1. Standard MUTATE: field already on node — full WF validation (rewrite_category required, field must be in mutate_scope).
+//  2. Additive MUTATE: field not yet on node — validate against ontology type spec only.
+//     WF mutate_scope is skipped because the field is being added for the first time (e.g. a new
+//     optional property from a later ontology version). rewrite_category may be empty.
 func (r *Registry) ValidateMUTATE(env graph.Envelope, node graph.Node) error {
+	_, fieldOnNode := node.Properties[env.Field]
+
+	if !fieldOnNode {
+		// Additive MUTATE: field not on node — validate via ontology type spec only.
+		typeSpec, hasTypeSpec := r.NodeTypes[node.TypeID]
+		if hasTypeSpec {
+			pspec, hasPspec := typeSpec.Properties[env.Field]
+			if !hasPspec {
+				return fmt.Errorf("operad: field %q not declared in type spec for %s (additive MUTATE requires ontology-declared field)", env.Field, node.TypeID)
+			}
+			if pspec.Mutability != "mutable" {
+				return fmt.Errorf("operad: field %q is not mutable in type spec for %s", env.Field, node.TypeID)
+			}
+			if err := checkAuthority(pspec.AuthorityScope, env.Actor, node); err != nil {
+				return err
+			}
+		}
+		// If a rewrite_category is provided, it must be a known one — but it's optional here.
+		if env.RewriteCategory != "" {
+			if _, ok := r.RewriteCategories[env.RewriteCategory]; !ok {
+				return fmt.Errorf("operad: unknown rewrite_category %q", env.RewriteCategory)
+			}
+		}
+		return nil
+	}
+
+	// Standard MUTATE: field already on node — full WF validation.
 	wfSpec, ok := r.RewriteCategories[env.RewriteCategory]
 	if !ok {
 		return fmt.Errorf("operad: unknown rewrite_category %q", env.RewriteCategory)
