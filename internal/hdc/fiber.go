@@ -55,8 +55,10 @@ func EncodeFiber(state graph.GraphState, kernelURN graph.URN, enc *Encoder) HV {
 	}
 	nodeURNs := NodesInKernel(state, kernelURN)
 	vectors := make([]HV, 0, len(nodeURNs))
+	
+	encodedBatch := enc.EncodeNodes(state, nodeURNs)
 	for _, urn := range nodeURNs {
-		vectors = append(vectors, enc.EncodeNode(state, urn))
+		vectors = append(vectors, encodedBatch[urn])
 	}
 	return Bundle(vectors...)
 }
@@ -121,10 +123,11 @@ func FiberAssignments(state graph.GraphState, enc *Encoder) []FiberAssignmentEnt
 	sort.Slice(urns, func(i, j int) bool { return urns[i] < urns[j] })
 
 	out := make([]FiberAssignmentEntry, 0, len(urns))
+	encodedBatch := enc.EncodeNodes(state, urns)
 	for _, urn := range urns {
 		node := state.Nodes[urn]
 		current := inferCurrentKernel(state, kernels, urn, node)
-		nodeVec := enc.EncodeNode(state, urn)
+		nodeVec := encodedBatch[urn]
 
 		bestKernel := kernels[0]
 		bestDistance := l2Distance(nodeVec, fibers[bestKernel])
