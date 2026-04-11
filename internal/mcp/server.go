@@ -212,7 +212,10 @@ func (s *Server) handleToolsList(req Request) Response {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"envelopes": map[string]any{"type": "array"},
+					"envelopes": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "object"},
+					},
 				},
 				"required": []string{"envelopes"},
 			},
