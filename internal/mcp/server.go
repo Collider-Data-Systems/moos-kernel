@@ -70,8 +70,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 
-	// Send endpoint event
-	fmt.Fprintf(w, "event: endpoint\ndata: /message?sessionId=%s\n\n", sessionID)
+	// Send endpoint event — use absolute URL so all MCP clients can resolve it
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	fmt.Fprintf(w, "event: endpoint\ndata: %s://%s/message?sessionId=%s\n\n", scheme, r.Host, sessionID)
 	flusher.Flush()
 
 	for {
