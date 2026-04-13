@@ -41,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 		w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /sse", s.handleSSE)
+	mux.HandleFunc("POST /sse", s.handleStreamableHTTP) // MCP 2025-03-26 Streamable HTTP
 	mux.HandleFunc("POST /message", s.handleMessage)
 	return mux
 }
@@ -118,6 +119,26 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
+// handleStreamableHTTP handles MCP 2025-03-26 Streamable HTTP transport.
+// Clients (e.g. Antigravity) POST JSON-RPC directly to /sse and read the
+// response from the HTTP body (no prior SSE session required).
+func (s *Server) handleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
+	var req Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	// Notifications (no id) — acknowledge without a body.
+	if req.ID == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	resp := s.dispatch(req)
+	data, _ := json.Marshal(resp)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(data)
 }
