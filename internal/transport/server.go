@@ -90,6 +90,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /hdc/crosswalk/suggestions", s.handleGetHDCCrosswalkSuggestions)
 	mux.HandleFunc("GET /hdc/classification-space", s.handleGetHDCClassificationSpace)
 
+	// Twin-kernel endpoints (M9 — adjoint sync protocol)
+	mux.HandleFunc("POST /twin/ingest", s.handleTwinIngest)
+	mux.HandleFunc("GET /twin/status", s.handleTwinStatus)
+
 	return corsMiddleware(mux)
 }
 

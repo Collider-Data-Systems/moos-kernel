@@ -93,9 +93,10 @@ func main() {
 	}
 
 	// --- Start HTTP transport ---
+	tSrv := transport.NewServer(rt, registry, tDay())
 	httpSrv := &http.Server{
 		Addr:    *listenAddr,
-		Handler: transport.NewServer(rt, registry, tDay()).Handler(),
+		Handler: tSrv.Handler(),
 	}
 	go func() {
 		log.Printf("transport: listening on %s", *listenAddr)
@@ -103,6 +104,8 @@ func main() {
 			log.Printf("transport: %v", err)
 		}
 	}()
+	// M9: start twin sync goroutine (forwards rewrites to eager twin_link endpoints).
+	go tSrv.RunTwinSync()
 
 	// --- Start MCP server ---
 	mcpSrv := mcp.NewServer(rt)
@@ -127,7 +130,6 @@ func main() {
 
 	// --- Start HTTP/3 QUIC transport (M10) ---
 	if *quicAddr != "" {
-		tSrv := transport.NewServer(rt, registry, tDay())
 		go tSrv.ServeQUIC(*quicAddr, *tlsCert, *tlsKey)
 	}
 
