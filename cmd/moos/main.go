@@ -35,6 +35,9 @@ func main() {
 	doSeed := flag.Bool("seed", false, "seed infrastructure nodes from flags")
 	seedUser := flag.String("seed-user", "sam", "username for seed node")
 	seedWS := flag.String("seed-ws", "hp-laptop", "workstation name for seed node")
+	quicAddr := flag.String("quic-addr", "", "UDP address for HTTP/3 QUIC listener (e.g. :4433). Requires --tls-cert and --tls-key.")
+	tlsCert  := flag.String("tls-cert", "", "Path to TLS certificate file (PEM) for QUIC listener")
+	tlsKey   := flag.String("tls-key",  "", "Path to TLS private key file (PEM) for QUIC listener")
 	flag.Parse()
 
 	// --- Load registry ---
@@ -120,6 +123,12 @@ func main() {
 			log.Println("mcp: starting stdio transport")
 			mcpSrv.HandleStdio(ctx, os.Stdin, os.Stdout)
 		}()
+	}
+
+	// --- Start HTTP/3 QUIC transport (M10) ---
+	if *quicAddr != "" {
+		tSrv := transport.NewServer(rt, registry, tDay())
+		go tSrv.ServeQUIC(*quicAddr, *tlsCert, *tlsKey)
 	}
 
 	// --- Graceful shutdown ---

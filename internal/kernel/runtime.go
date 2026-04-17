@@ -94,6 +94,13 @@ func (rt *Runtime) Apply(env graph.Envelope) (graph.EvalResult, error) {
 		}
 	}
 
+	// Strata enforcement (M5): validate LINK direction against filtration rules.
+	if env.RewriteType == graph.LINK && rt.registry != nil {
+		if err := rt.registry.ValidateStrataLink(env, rt.state); err != nil {
+			return graph.EvalResult{}, err
+		}
+	}
+
 	next, result, err := fold.Evaluate(rt.state, env)
 	if err != nil {
 		return graph.EvalResult{}, err
@@ -113,6 +120,10 @@ func (rt *Runtime) Apply(env graph.Envelope) (graph.EvalResult, error) {
 
 	rt.state = next
 	rt.log = append(rt.log, persisted)
+	// M1: increment session local_t if actor is a session node.
+	if actorNode, ok := rt.state.Nodes[env.Actor]; ok && actorNode.TypeID == "session" {
+		rt.bumpSessionLocalT(env.Actor)
+	}
 	rt.broadcast(persisted)
 	rt.runReactive(persisted)
 	rt.runHDCIndexAndDriftLocked(env)
@@ -145,6 +156,15 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 	}
 	envelopes = injected
 
+	// Strata enforcement (M5) for each LINK in the batch.
+	for _, env := range envelopes {
+		if env.RewriteType == graph.LINK && rt.registry != nil {
+			if err := rt.registry.ValidateStrataLink(env, rt.state); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	nextState, results, err := fold.EvaluateProgram(rt.state, envelopes)
 	if err != nil {
 		return nil, err
@@ -169,6 +189,18 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 
 	rt.state = nextState
 	rt.log = append(rt.log, persisted...)
+	// M1: bump local_t for all unique session actors in the batch.
+	{
+		seen := make(map[graph.URN]bool)
+		for _, env := range envelopes {
+			if !seen[env.Actor] {
+				seen[env.Actor] = true
+				if actorNode, ok := rt.state.Nodes[env.Actor]; ok && actorNode.TypeID == "session" {
+					rt.bumpSessionLocalT(env.Actor)
+				}
+			}
+		}
+	}
 	for _, p := range persisted {
 		rt.broadcast(p)
 	}
@@ -358,6 +390,61 @@ func (rt *Runtime) applyReactiveLocked(env graph.Envelope) {
 		return // persist failure: drop, don't corrupt in-memory state
 	}
 
+	rt.state = next
+	rt.log = append(rt.log, persisted)
+	rt.broadcast(persisted)
+}
+
+// bumpSessionLocalT increments the local_t property on a session node after each
+// kernel-acknowledged rewrite issued by that session (M1).
+// Called with rt.mu already held.
+// The increment is a kernel-internal MUTATE — it is persisted to the log and broadcast.
+func (rt *Runtime) bumpSessionLocalT(sessionURN graph.URN) {
+	actorNode, ok := rt.state.Nodes[sessionURN]
+	if !ok || actorNode.TypeID != "session" {
+		return
+	}
+
+	var currentT int64
+	if prop, ok := actorNode.Properties["local_t"]; ok {
+		switch v := prop.Value.(type) {
+		case float64:
+			currentT = int64(v)
+		case int64:
+			currentT = v
+		case int:
+			currentT = int64(v)
+		}
+	}
+
+	kernelActor := rt.hdcActorURN(sessionURN)
+	mutEnv := graph.Envelope{
+		RewriteType:     graph.MUTATE,
+		Actor:           kernelActor,
+		RewriteCategory: graph.WF19,
+		TargetURN:       sessionURN,
+		Field:           "local_t",
+		NewValue:        currentT + 1,
+	}
+	// Inject PropertySpec for additive MUTATE (local_t may not be on node yet).
+	mutEnv = rt.injectPropertySpec(mutEnv, actorNode)
+
+	next, _, err := fold.Evaluate(rt.state, mutEnv)
+	if err != nil {
+		return // local_t not declared in ontology or other structural issue — skip
+	}
+
+	seq := rt.logSeq.Add(1)
+	now := time.Now().UTC()
+	persisted := graph.PersistedRewrite{
+		Envelope:  mutEnv,
+		AppliedAt: now,
+		Timestamp: now,
+		LogSeq:    seq,
+	}
+	if err := rt.store.Append([]graph.PersistedRewrite{persisted}); err != nil {
+		return
+	}
 	rt.state = next
 	rt.log = append(rt.log, persisted)
 	rt.broadcast(persisted)

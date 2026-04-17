@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"moos/kernel/internal/fold"
 	"moos/kernel/internal/graph"
 	"moos/kernel/internal/hdc"
 	"moos/kernel/internal/kernel"
@@ -42,6 +43,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Alt-Svc", `h3=":443"; ma=2592000`)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -63,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /log", s.handleGetLog)
 	mux.HandleFunc("GET /log/stream", s.handleLogStream)
+
+	mux.HandleFunc("GET /fold", s.handleGetFold)
+	mux.HandleFunc("GET /fold/stream", s.handleFoldStream)
 
 	mux.HandleFunc("POST /rewrites", s.handlePostRewrite)
 	mux.HandleFunc("POST /programs", s.handlePostProgram)
@@ -158,6 +163,118 @@ func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data, err := json.Marshal(pr)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// --- Fold ---
+
+// handleGetFold returns the graph state projected at log position `to`.
+// GET /fold?to=<n>  — state at time n (replay log[0..n])
+// GET /fold         — current state (equivalent to full log replay)
+// This is the M3 catamorphism exposed as an HTTP observable.
+func (s *Server) handleGetFold(w http.ResponseWriter, r *http.Request) {
+	log := s.inspect.Log()
+
+	to := len(log)
+	if raw := strings.TrimSpace(r.URL.Query().Get("to")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			if v < 0 {
+				v = 0
+			}
+			if v > len(log) {
+				v = len(log)
+			}
+			to = v
+		}
+	}
+
+	state, err := fold.Replay(log[:to])
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fold: "+err.Error())
+		return
+	}
+
+	nodes := make([]graph.Node, 0, len(state.Nodes))
+	for _, n := range state.Nodes {
+		nodes = append(nodes, n)
+	}
+	rels := make([]graph.Relation, 0, len(state.Relations))
+	for _, rel := range state.Relations {
+		rels = append(rels, rel)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"t":         to,
+		"log_len":   len(log),
+		"nodes":     nodes,
+		"relations": rels,
+	})
+}
+
+// handleFoldStream streams state evolution via SSE.
+// On connect: sends a "snapshot" event with the current full state.
+// Thereafter: sends a "rewrite" event for each new applied rewrite.
+// Clients can reconstruct state(t+k) = fold(snapshot + rewrites[0..k]).
+func (s *Server) handleFoldStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// Subscribe first so we don't miss rewrites between snapshot and stream start.
+	id := fmt.Sprintf("fold-sse-%d", time.Now().UnixNano())
+	ch := s.observe.Subscribe(id)
+	defer s.observe.Unsubscribe(id)
+
+	// Send current state snapshot as first event.
+	log := s.inspect.Log()
+	if state, err := fold.Replay(log); err == nil {
+		nodes := make([]graph.Node, 0, len(state.Nodes))
+		for _, n := range state.Nodes {
+			nodes = append(nodes, n)
+		}
+		rels := make([]graph.Relation, 0, len(state.Relations))
+		for _, rel := range state.Relations {
+			rels = append(rels, rel)
+		}
+		snap := map[string]any{
+			"event":     "snapshot",
+			"t":         len(log),
+			"nodes":     nodes,
+			"relations": rels,
+		}
+		if data, err := json.Marshal(snap); err == nil {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+
+	// Stream subsequent rewrites.
+	for {
+		select {
+		case pr, open := <-ch:
+			if !open {
+				return
+			}
+			evt := map[string]any{
+				"event":   "rewrite",
+				"log_seq": pr.LogSeq,
+				"rewrite": pr,
+			}
+			data, err := json.Marshal(evt)
 			if err != nil {
 				continue
 			}
