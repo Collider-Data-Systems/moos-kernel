@@ -174,7 +174,7 @@ func portColorFromName(port string) graph.PortColor {
 		return "" // ambiguous: compute or storage depending on src node type — skip color check
 	case "participates", "participated-by", "focus", "on",
 		"anchors", "anchor", "causes", "summarizes", "daily-summary", "depends-on", "depended-by", "participant",
-		"triggers", "triggered-by", "guards", "guarded-by", "emits", "emitted-by", "watches":
+		"triggers", "triggered-by", "guards", "guarded-by", "emits", "emitted-by", "watches", "watched-by":
 		return graph.ColorWorkflow
 	case "projected-to", "rendered-as", "displayed-as":
 		return graph.ColorProjection
