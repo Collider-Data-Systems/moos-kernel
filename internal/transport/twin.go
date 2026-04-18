@@ -95,6 +95,18 @@ func (s *Server) RunTwinSync() {
 
 // forwardToEagerTwins inspects current twin_link nodes and forwards the rewrite
 // to any that are status=active and sync_mode=eager.
+//
+// TODO(perf): this scans all nodes on every rewrite just to find the handful
+// of twin_link nodes (usually ≤ a few per kernel). Maintain a cached list of
+// active eager twin endpoints, invalidated on twin_link ADD/UNLINK or
+// status/sync_mode MUTATE, to turn this into an O(twins) step (PR #8
+// review, Gemini).
+//
+// TODO(perf): `go twinPost(...)` spawns an unbounded goroutine per
+// (rewrite × eager-twin). Under burst load with slow remote twins this
+// can balloon memory + FDs. Replace with a bounded worker pool (size
+// proportional to len(eager_twins) × 2, or a single per-endpoint serial
+// worker) and per-endpoint rate limiting (PR #8 review, Copilot + Gemini).
 func (s *Server) forwardToEagerTwins(pr graph.PersistedRewrite) {
 	nodes := s.inspect.Nodes()
 	for _, n := range nodes {
@@ -115,6 +127,15 @@ func (s *Server) forwardToEagerTwins(pr graph.PersistedRewrite) {
 	}
 }
 
+// twinHTTPClient is shared across all twinPost calls so TCP/QUIC connections
+// to remote twins are reused across rewrites instead of allocating a new
+// http.Transport per request (PR #8 review, Copilot + Gemini).
+//
+// The timeout applies per-request; larger-than-5s is a deliberate choice:
+// remote mtdc kernel is sometimes slow over the CF tunnel, and dropping
+// the request is worse than waiting a bit longer when we're fire-and-forget.
+var twinHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // twinPost POSTs a single envelope to a remote twin's /twin/ingest endpoint.
 // Fire-and-forget: errors are logged, not propagated.
 func twinPost(endpoint string, env graph.Envelope) {
@@ -123,8 +144,7 @@ func twinPost(endpoint string, env graph.Envelope) {
 		log.Printf("transport: twin post marshal: %v", err)
 		return
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(endpoint+"/twin/ingest", "application/json", bytes.NewReader(body))
+	resp, err := twinHTTPClient.Post(endpoint+"/twin/ingest", "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("transport: twin post to %s: %v", endpoint, err)
 		return

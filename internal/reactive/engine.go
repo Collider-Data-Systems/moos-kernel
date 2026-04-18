@@ -288,6 +288,14 @@ type thookEventShape struct {
 
 // thookEventShapeMatches checks whether a t_hook's event_shape filter passes
 // for the given rewrite. Missing event_shape means "match all" (open hook).
+//
+// TODO(perf): this function is called once per t_hook per rewrite, and the
+// JSON marshal+unmarshal round-trip on event_shape is pure overhead when the
+// stored value is already map[string]any (the common case after log replay).
+// Fast-path: type-switch on prop.Value.(map[string]any) and read fields
+// directly without re-encoding. Stored value cached on the node at ADD time
+// would be even better, but requires extending the graph types (PR #8
+// review, Gemini).
 func (e *Engine) thookEventShapeMatches(thook graph.Node, env graph.Envelope, affectedTypeID graph.TypeID) bool {
 	prop, ok := thook.Properties["event_shape"]
 	if !ok {

@@ -130,6 +130,18 @@ func main() {
 
 	// --- Start HTTP/3 QUIC transport (M10) ---
 	if *quicAddr != "" {
+		// Fail fast with a clear message rather than letting ServeQUIC emit a
+		// generic "open tls-cert: no such file" deep in the goroutine where
+		// it's easy to miss. Addresses PR #8 review (Copilot).
+		if *tlsCert == "" || *tlsKey == "" {
+			log.Fatalf("--quic-addr=%s requires both --tls-cert and --tls-key to be set (got cert=%q key=%q)",
+				*quicAddr, *tlsCert, *tlsKey)
+		}
+		// Advertise HTTP/3 via Alt-Svc, using the actual configured QUIC
+		// UDP port, not a hardcoded :443. Clients need the correct
+		// port/authority for HTTP/3 discovery; hardcoded :443 was a bug
+		// when running on non-default ports (PR #8 review, Copilot+Gemini).
+		tSrv.SetAltSvc(fmt.Sprintf(`h3=%q; ma=2592000`, *quicAddr))
 		go tSrv.ServeQUIC(*quicAddr, *tlsCert, *tlsKey)
 	}
 
