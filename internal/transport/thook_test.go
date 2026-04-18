@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -362,9 +363,17 @@ func muxWithBatchTHook(s *Server) *http.ServeMux {
 
 // postJSON is a small helper that POSTs a JSON-encoded body and returns the
 // recorder. Content-Type is set; body encoding is json.Marshal of the value.
-func postJSON(mux *http.ServeMux, path string, body any) *httptest.ResponseRecorder {
-	raw, _ := json.Marshal(body)
-	req := httptest.NewRequest("POST", path, strings.NewReader(string(raw)))
+//
+// Marshal errors abort the test via t.Fatalf rather than being silently
+// ignored; the raw bytes are passed via bytes.NewReader to avoid a
+// bytes→string→bytes round-trip (PR #11 review, Copilot).
+func postJSON(t *testing.T, mux *http.ServeMux, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	req := httptest.NewRequest("POST", path, bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -376,7 +385,7 @@ func TestTHookEvaluateBatch_EmptyURNs(t *testing.T) {
 	srv := serverWithState(stateWithMultipleHooks())
 	mux := muxWithBatchTHook(srv)
 
-	rec := postJSON(mux, "/t-hook/evaluate", map[string]any{"urns": []string{}, "at": 220})
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{"urns": []string{}, "at": 220})
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for empty urns, got %d: %s", rec.Code, rec.Body.String())
@@ -426,7 +435,7 @@ func TestTHookEvaluateBatch_TwoValidHooks(t *testing.T) {
 	srv := serverWithState(stateWithMultipleHooks())
 	mux := muxWithBatchTHook(srv)
 
-	rec := postJSON(mux, "/t-hook/evaluate", map[string]any{
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{
 		"urns": []string{"urn:moos:t_hook:sam.hook-a", "urn:moos:t_hook:sam.hook-b"},
 		"at":   250,
 	})
@@ -467,7 +476,7 @@ func TestTHookEvaluateBatch_MixedValidAndMissing(t *testing.T) {
 	srv := serverWithState(stateWithMultipleHooks())
 	mux := muxWithBatchTHook(srv)
 
-	rec := postJSON(mux, "/t-hook/evaluate", map[string]any{
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{
 		"urns": []string{
 			"urn:moos:t_hook:sam.hook-a",      // valid t_hook
 			"urn:moos:t_hook:sam.nonexistent", // missing
@@ -506,7 +515,7 @@ func TestTHookEvaluateBatch_MissingAtDefault(t *testing.T) {
 	srv := serverWithState(stateWithMultipleHooks())
 	mux := muxWithBatchTHook(srv)
 
-	rec := postJSON(mux, "/t-hook/evaluate", map[string]any{
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{
 		"urns": []string{"urn:moos:t_hook:sam.hook-a"},
 	})
 
@@ -532,13 +541,18 @@ func TestTHookEvaluateBatch_ResponseFields(t *testing.T) {
 	srv := serverWithState(stateWithMultipleHooks())
 	mux := muxWithBatchTHook(srv)
 
-	rec := postJSON(mux, "/t-hook/evaluate", map[string]any{
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{
 		"urns": []string{"urn:moos:t_hook:sam.hook-a"},
 		"at":   250,
 	})
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
 	var resp []map[string]any
-	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(resp) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(resp))
 	}
@@ -564,10 +578,15 @@ func TestTHookEvaluateBatch_OrderPreserved(t *testing.T) {
 		"urn:moos:t_hook:sam.missing-2",
 		"urn:moos:t_hook:sam.hook-b",
 	}
-	rec := postJSON(mux, "/t-hook/evaluate", map[string]any{"urns": urns, "at": 250})
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{"urns": urns, "at": 250})
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
 	var resp []map[string]any
-	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(resp) != len(urns) {
 		t.Fatalf("expected %d entries, got %d", len(urns), len(resp))
 	}
@@ -575,6 +594,38 @@ func TestTHookEvaluateBatch_OrderPreserved(t *testing.T) {
 		if resp[i]["urn"] != u {
 			t.Errorf("order drift at index %d: want %q, got %q", i, u, resp[i]["urn"])
 		}
+	}
+}
+
+// TestTHookEvaluateBatch_MissingURNsField — {} body (missing required "urns"
+// field) returns 400. An explicit "urns":[] is still 200. Regression for
+// PR #11 review (Copilot).
+func TestTHookEvaluateBatch_MissingURNsField(t *testing.T) {
+	srv := serverWithState(stateWithMultipleHooks())
+	mux := muxWithBatchTHook(srv)
+
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{"at": 220})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing urns field, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTHookEvaluateBatch_BodySizeLimit — a payload above batchEvaluateMaxBodyBytes
+// returns 413. Regression for PR #11 review (Gemini security-medium).
+func TestTHookEvaluateBatch_BodySizeLimit(t *testing.T) {
+	srv := serverWithState(stateWithMultipleHooks())
+	mux := muxWithBatchTHook(srv)
+
+	// Build a body bigger than the 1 MiB cap. One ~50-char URN × 25k = 1.25 MiB.
+	huge := make([]string, 25_000)
+	for i := range huge {
+		huge[i] = "urn:moos:t_hook:sam.padding-with-a-long-suffix-to-bust-limit"
+	}
+	rec := postJSON(t, mux, "/t-hook/evaluate", map[string]any{"urns": huge})
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversize body, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
