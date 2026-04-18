@@ -404,3 +404,123 @@ func TestThookPredicate_JSONNumberCoercion(t *testing.T) {
 		t.Error("int 187 and float64 187 should compare equal under Sprintf formatting")
 	}
 }
+
+// TestThookPredicate_MalformedFailClosed verifies that predicates missing
+// required fields for their kind evaluate to false, rather than silently
+// treating zero values as valid input. Regression for the PR #9 review
+// (Copilot flagged fires_at/before_urn/all_of all defaulting to truthy on
+// missing-field inputs).
+func TestThookPredicate_MalformedFailClosed(t *testing.T) {
+	state := stateForPredicates()
+
+	cases := []struct {
+		name string
+		pred map[string]any
+		at   int
+	}{
+		// fires_at / closes_at without `t` must fail closed (previously
+		// default-zero would fire at any non-negative currentT).
+		{"fires_at missing t", map[string]any{"kind": "fires_at"}, 0},
+		{"fires_at missing t at high T", map[string]any{"kind": "fires_at"}, 10_000},
+		{"fires_at with non-numeric t", map[string]any{"kind": "fires_at", "t": "not-a-number"}, 220},
+		{"closes_at missing t", map[string]any{"kind": "closes_at"}, 220},
+
+		// after_urn requires urn+prop+value. All absent or empty → false.
+		{"after_urn missing everything", map[string]any{"kind": "after_urn"}, 220},
+		{"after_urn empty urn", map[string]any{"kind": "after_urn", "urn": "", "prop": "status", "value": "completed"}, 220},
+		{"after_urn empty prop", map[string]any{"kind": "after_urn", "urn": "urn:moos:program:sam.t187-kernel-proper", "prop": "", "value": "completed"}, 220},
+		{"after_urn missing value", map[string]any{"kind": "after_urn", "urn": "urn:moos:program:sam.t187-kernel-proper", "prop": "status"}, 220},
+
+		// before_urn malformed must ALSO fail closed — even though a
+		// well-formed before_urn returns true for missing nodes, a
+		// predicate without urn/prop/value has no ground truth to invert.
+		{"before_urn missing everything", map[string]any{"kind": "before_urn"}, 220},
+		{"before_urn empty urn", map[string]any{"kind": "before_urn", "urn": "", "prop": "status", "value": "completed"}, 220},
+		{"before_urn empty prop", map[string]any{"kind": "before_urn", "urn": "urn:moos:program:sam.t187-kernel-proper", "prop": "", "value": "completed"}, 220},
+		{"before_urn missing value", map[string]any{"kind": "before_urn", "urn": "urn:moos:program:sam.t187-kernel-proper", "prop": "status"}, 220},
+
+		// all_of / any_of without predicates must fail closed. Vacuous
+		// truth/falsity only applies to an EXPLICIT empty array.
+		{"all_of without predicates", map[string]any{"kind": "all_of"}, 220},
+		{"all_of with non-array predicates", map[string]any{"kind": "all_of", "predicates": "not-an-array"}, 220},
+		{"all_of with non-object sub-predicate", map[string]any{"kind": "all_of", "predicates": []any{"not-an-object"}}, 220},
+		{"any_of without predicates", map[string]any{"kind": "any_of"}, 220},
+		{"any_of with non-array predicates", map[string]any{"kind": "any_of", "predicates": 42}, 220},
+
+		// Missing or empty kind.
+		{"no kind", map[string]any{}, 220},
+		{"empty kind", map[string]any{"kind": ""}, 220},
+		{"non-string kind", map[string]any{"kind": 42}, 220},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if EvaluateThookPredicate(tc.pred, state, tc.at) {
+				t.Errorf("%s: expected false (fail-closed), got true", tc.name)
+			}
+		})
+	}
+}
+
+// TestThookPredicate_ExplicitEmptyCompositions verifies that an EXPLICIT empty
+// predicates array preserves the mathematical identities of AND/OR:
+//
+//	all_of([]) = true   (vacuous AND)
+//	any_of([]) = false  (vacuous OR)
+//
+// This is the intentional contrast with TestThookPredicate_MalformedFailClosed:
+// empty is allowed, missing is not.
+func TestThookPredicate_ExplicitEmptyCompositions(t *testing.T) {
+	state := stateForPredicates()
+
+	allOfEmpty := map[string]any{"kind": "all_of", "predicates": []any{}}
+	if !EvaluateThookPredicate(allOfEmpty, state, 220) {
+		t.Error("all_of with explicit empty predicates should be vacuously true")
+	}
+
+	anyOfEmpty := map[string]any{"kind": "any_of", "predicates": []any{}}
+	if EvaluateThookPredicate(anyOfEmpty, state, 220) {
+		t.Error("any_of with explicit empty predicates should be vacuously false")
+	}
+}
+
+// TestThookPredicate_MapFastPath verifies the performance fast-path: callers
+// that pass an already-parsed map[string]any skip the marshal/unmarshal
+// round-trip. Semantically identical to EvaluateThookPredicate but exported
+// so sweep loops can avoid allocations.
+func TestThookPredicate_MapFastPath(t *testing.T) {
+	state := stateForPredicates()
+
+	// Direct map input — should take the fast path.
+	pred := map[string]any{"kind": "fires_at", "t": 187}
+
+	// Both entry points should agree.
+	if EvaluateThookPredicate(pred, state, 200) != EvaluateThookPredicateMap(pred, state, 200) {
+		t.Error("EvaluateThookPredicate and EvaluateThookPredicateMap should produce identical results")
+	}
+	if !EvaluateThookPredicateMap(pred, state, 200) {
+		t.Error("fires_at t=187 at currentT=200 via Map fast-path should be true")
+	}
+}
+
+// TestThookPredicate_NonMapFallback verifies that non-map inputs (e.g. a
+// JSON string source, a raw bytes blob) still normalise correctly via the
+// JSON round-trip path.
+func TestThookPredicate_NonMapFallback(t *testing.T) {
+	state := stateForPredicates()
+
+	// Input as a JSON-encoded byte slice — not a map. Must round-trip.
+	// json.Marshal of a []byte produces base64, so use json.RawMessage instead.
+	type Struct struct {
+		Kind string `json:"kind"`
+		T    int    `json:"t"`
+	}
+	typed := Struct{Kind: "fires_at", T: 187}
+
+	if !EvaluateThookPredicate(typed, state, 200) {
+		t.Error("fires_at from a typed Go struct should evaluate correctly via fallback path")
+	}
+	if EvaluateThookPredicate(typed, state, 100) {
+		t.Error("fires_at from a typed Go struct at T<t should be false")
+	}
+}
