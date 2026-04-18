@@ -71,6 +71,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /hdc/crosswalk/suggestions", s.handleGetHDCCrosswalkSuggestions)
 	mux.HandleFunc("GET /hdc/classification-space", s.handleGetHDCClassificationSpace)
 
+	// T-hook introspection (§M14 — predicate evaluator endpoint)
+	mux.HandleFunc("GET /t-hook/evaluate/{urn}", s.handleGetTHookEvaluate)
+
 	return mux
 }
 
