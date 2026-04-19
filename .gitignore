@@ -1,6 +1,7 @@
 # Binaries
 /moos
 *.exe
+*.exe~
 *.out
 
 # Test artifacts
