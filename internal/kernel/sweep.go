@@ -66,14 +66,18 @@ const DefaultSweepActor graph.URN = "urn:moos:kernel:sweep"
 // a snapshot-time `now` so all proposals in one sweep share a single
 // timestamp; this also makes the function testable without a clock stub.
 //
-// Idempotency: hooks that already have a matching governance_proposal
-// (by source_t_hook_urn equality) are skipped.
+// Idempotency (v3.11+): hooks with firing_state ∈ {"", "pending"} are
+// eligible to fire; anything else (proposed | approved | rejected |
+// applied | closed) is skipped. Empty-string treatment matches the
+// v3.11 spec default of pending so pre-v3.11 hooks work without a
+// migration write.
 //
-// baseLogSeq is used only for URN disambiguation across hooks within a
-// single tick — it's appended to the URN suffix so two hooks firing in
-// the same tick get distinct proposal URNs. The offset starts at 1 so
-// the sequence matches the log_seq that ApplyProgram will assign when
-// the envelopes actually append (PR #12 review — Gemini).
+// baseLogSeq is a STABLE-for-the-tick prefix baked into the generated
+// proposal URN for readability. It is NOT guaranteed to match the
+// actual log_seq the envelope ends up carrying when ApplyProgram
+// appends — reading logSeq outside the write lock is racy. The per-
+// tick `emitted` counter is what actually provides uniqueness across
+// hooks in a single tick (PR #25 review — Gemini).
 func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq int64, now time.Time) []graph.Envelope {
 	var envelopes []graph.Envelope
 	emitted := int64(0)
@@ -119,11 +123,19 @@ func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq
 		// ApplyProgram is all-or-nothing, so if either fails (e.g. URN
 		// collision on the proposal, or ontology validation rejects the
 		// MUTATE) neither lands and the next tick retries.
+		//
+		// URN disambiguation: the proposal URN embeds hook slug + T-day +
+		// a per-tick counter (`emitted`). baseLogSeq is a stable tick-wide
+		// prefix read from rt.logSeq at the start of the tick; it's NOT
+		// promised to match the actual log_seq the envelope ends up
+		// carrying (PR #25 review — Gemini flagged the race). The
+		// suffix only needs to be unique across hooks within this tick,
+		// and across ticks of this sweep goroutine; `emitted` covers
+		// both because ApplyProgram is locked and a single goroutine
+		// drives the sweep.
 		hookSlug := slugFromURN(n.URN)
-		// Two envelopes per hook. Offset numbering accordingly so each
-		// envelope's log_seq aligns with baseLogSeq + emitted count.
 		emitted++
-		proposalURN := graph.URN(fmt.Sprintf("urn:moos:proposal:kernel.%s-t%d-seq%d", hookSlug, currentT, baseLogSeq+emitted))
+		proposalURN := graph.URN(fmt.Sprintf("urn:moos:proposal:kernel.%s-t%d-tick%d-n%d", hookSlug, currentT, baseLogSeq, emitted))
 
 		title := fmt.Sprintf("Fire t_hook %s at T=%d", n.URN, currentT)
 
@@ -141,6 +153,25 @@ func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq
 			props["owner_urn"] = graph.Property{Value: p.Value, Mutability: "immutable"}
 		}
 
+		// RewriteCategory is intentionally omitted on both envelopes:
+		//
+		//   - The ADD creates a governance_proposal NODE. Node creation
+		//     is typed by type_id; no WF category applies. (PR #25
+		//     review — Gemini suggested WF13; WF13's allowed_rewrites
+		//     are LINK/UNLINK/MUTATE, not ADD, and WF13 models a
+		//     governance_proposal PROMOTING to a target, not the
+		//     proposal's creation. We don't carry a WF here.)
+		//
+		//   - The MUTATE on firing_state is ALWAYS additive on first
+		//     firing (field absent on the hook → pending → proposed).
+		//     Additive MUTATE validation doesn't require a
+		//     rewrite_category per operad.ValidateMUTATE. For future
+		//     non-additive transitions (approver reactor: proposed →
+		//     applied; reopens_at: applied → pending) a WF category
+		//     will be needed. TODO(WF): either extend WF17 Reactive
+		//     mutate_scope to include firing_state, or introduce a new
+		//     WF21 "Reactive firing lifecycle". Pick when the approver
+		//     reactor PR lands.
 		envelopes = append(envelopes,
 			graph.Envelope{
 				RewriteType: graph.ADD,
@@ -149,11 +180,6 @@ func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq
 				TypeID:      "governance_proposal",
 				Properties:  props,
 			},
-			// Firing_state transition. Additive MUTATE works against hooks
-			// authored pre-v3.11 (no firing_state on node) because the
-			// field is now declared in the ontology spec and the runtime
-			// injects the PropertySpec for additive MUTATEs of declared
-			// mutable fields.
 			graph.Envelope{
 				RewriteType: graph.MUTATE,
 				Actor:       actor,
