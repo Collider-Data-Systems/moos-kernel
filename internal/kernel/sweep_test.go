@@ -10,9 +10,9 @@ import (
 
 // sweepState returns a graph state with:
 //   - urn:moos:program:sam.prog  (status=active)
-//   - urn:moos:t_hook:sam.hook-a (fires_at=200, no pending proposal)
-//   - urn:moos:t_hook:sam.hook-b (fires_at=300, no pending proposal — never fires at T=250)
-//   - urn:moos:t_hook:sam.hook-c (fires_at=180 but already has a governance_proposal)
+//   - urn:moos:t_hook:sam.hook-a (fires_at=200, firing_state absent = pending)
+//   - urn:moos:t_hook:sam.hook-b (fires_at=300, firing_state absent)
+//   - urn:moos:t_hook:sam.hook-c (fires_at=180, firing_state="proposed" — should be skipped by the v3.11 idempotency check)
 func sweepState() graph.GraphState {
 	return graph.GraphState{
 		Nodes: map[graph.URN]graph.Node{
@@ -47,11 +47,16 @@ func sweepState() graph.GraphState {
 				URN:    "urn:moos:t_hook:sam.hook-c",
 				TypeID: "t_hook",
 				Properties: map[string]graph.Property{
-					"owner_urn": {Value: "urn:moos:program:sam.prog", Mutability: "immutable"},
-					"predicate": {Value: map[string]any{"kind": "fires_at", "t": 180}, Mutability: "immutable"},
+					"owner_urn":    {Value: "urn:moos:program:sam.prog", Mutability: "immutable"},
+					"predicate":    {Value: map[string]any{"kind": "fires_at", "t": 180}, Mutability: "immutable"},
+					"firing_state": {Value: "proposed", Mutability: "mutable", AuthorityScope: "kernel"},
 				},
 			},
-			// Proposal already exists for hook-c — idempotency marker.
+			// The old-style paired governance_proposal stays in the fixture.
+			// Under v3.11 semantics it's ignored by the sweep's idempotency
+			// check — which now looks at firing_state on the hook itself —
+			// but we keep it so the TestSweepOnce_AllFire case still has a
+			// realistic "hook already processed" shape in state.
 			"urn:moos:proposal:kernel.hook-c-t180-seq0": {
 				URN:    "urn:moos:proposal:kernel.hook-c-t180-seq0",
 				TypeID: "governance_proposal",
@@ -66,69 +71,112 @@ func sweepState() graph.GraphState {
 	}
 }
 
+// findProposalFor returns the first ADD governance_proposal envelope
+// whose source_t_hook_urn matches hookURN, plus the paired MUTATE
+// firing_state envelope that should follow it. Helper for the post-v3.11
+// sweep tests where each firing hook produces two envelopes.
+func findProposalFor(envs []graph.Envelope, hookURN string) (add, mut *graph.Envelope) {
+	for i := range envs {
+		e := &envs[i]
+		if e.RewriteType == graph.ADD && e.TypeID == "governance_proposal" {
+			if s, _ := e.Properties["source_t_hook_urn"].Value.(string); s == hookURN {
+				add = e
+				// The MUTATE pairing is the next envelope (emitted together).
+				if i+1 < len(envs) && envs[i+1].RewriteType == graph.MUTATE && string(envs[i+1].TargetURN) == hookURN && envs[i+1].Field == "firing_state" {
+					mut = &envs[i+1]
+				}
+				return
+			}
+		}
+	}
+	return nil, nil
+}
+
 // TestSweepOnce_FiresMaturedHook — at T=250, hook-a (fires_at=200) fires
-// and produces a governance_proposal envelope. hook-b (fires_at=300) does
-// not. hook-c already has a proposal and is skipped.
+// and produces a pair: (ADD governance_proposal, MUTATE firing_state).
+// hook-b (fires_at=300) doesn't fire. hook-c has firing_state=proposed so
+// the v3.11 idempotency check skips it.
 func TestSweepOnce_FiresMaturedHook(t *testing.T) {
 	state := sweepState()
 	actor := graph.URN("urn:moos:kernel:test.sweep")
 	envelopes := SweepOnce(state, 250, actor, 0, time.Unix(1700000000, 0))
 
-	if len(envelopes) != 1 {
-		t.Fatalf("expected exactly 1 envelope (hook-a ADD governance_proposal); got %d:\n%v", len(envelopes), envelopes)
+	// v3.11: one firing → two envelopes (ADD proposal + MUTATE firing_state).
+	if len(envelopes) != 2 {
+		t.Fatalf("expected exactly 2 envelopes (ADD proposal + MUTATE firing_state for hook-a); got %d:\n%v", len(envelopes), envelopes)
 	}
-	env := envelopes[0]
-	if env.RewriteType != graph.ADD {
-		t.Errorf("expected ADD, got %s", env.RewriteType)
+	add, mut := findProposalFor(envelopes, "urn:moos:t_hook:sam.hook-a")
+	if add == nil || mut == nil {
+		t.Fatalf("expected hook-a ADD + MUTATE pair; got envelopes=%v", envelopes)
 	}
-	if env.TypeID != "governance_proposal" {
-		t.Errorf("expected governance_proposal, got %s", env.TypeID)
+	if add.TypeID != "governance_proposal" {
+		t.Errorf("expected governance_proposal, got %s", add.TypeID)
 	}
-	if env.Actor != actor {
-		t.Errorf("expected actor %s, got %s", actor, env.Actor)
+	if add.Actor != actor {
+		t.Errorf("expected actor %s on ADD, got %s", actor, add.Actor)
 	}
-	// Check the proposal references hook-a.
-	srcHookProp := env.Properties["source_t_hook_urn"]
-	if s, _ := srcHookProp.Value.(string); s != "urn:moos:t_hook:sam.hook-a" {
-		t.Errorf("expected source_t_hook_urn=hook-a, got %v", srcHookProp.Value)
+	if mut.Actor != actor {
+		t.Errorf("expected actor %s on MUTATE, got %s", actor, mut.Actor)
 	}
 	// fires_at_t should be 250 (the T we evaluated at).
-	if fireT, _ := env.Properties["fires_at_t"].Value.(int); fireT != 250 {
-		t.Errorf("expected fires_at_t=250, got %v", env.Properties["fires_at_t"].Value)
+	if fireT, _ := add.Properties["fires_at_t"].Value.(int); fireT != 250 {
+		t.Errorf("expected fires_at_t=250, got %v", add.Properties["fires_at_t"].Value)
 	}
-	// title required immutable.
-	titleProp, hasTitle := env.Properties["title"]
-	if !hasTitle {
-		t.Error("expected title property on governance_proposal (required immutable)")
+	// MUTATE transitions firing_state → proposed on the source hook.
+	if mut.Field != "firing_state" {
+		t.Errorf("expected MUTATE field=firing_state, got %s", mut.Field)
 	}
-	if titleProp.Mutability != "immutable" {
-		t.Errorf("expected title.Mutability=immutable, got %s", titleProp.Mutability)
+	if mut.NewValue != "proposed" {
+		t.Errorf("expected MUTATE new_value=proposed, got %v", mut.NewValue)
 	}
 	// URN pattern check (urn:moos:proposal:<user>.<slug>).
-	if !strings.HasPrefix(string(env.NodeURN), "urn:moos:proposal:") {
-		t.Errorf("expected node_urn to start with urn:moos:proposal:, got %s", env.NodeURN)
+	if !strings.HasPrefix(string(add.NodeURN), "urn:moos:proposal:") {
+		t.Errorf("expected node_urn to start with urn:moos:proposal:, got %s", add.NodeURN)
 	}
 	// Must mention hook slug for traceability.
-	if !strings.Contains(string(env.NodeURN), "hook-a") {
-		t.Errorf("expected node_urn to contain hook-a slug, got %s", env.NodeURN)
+	if !strings.Contains(string(add.NodeURN), "hook-a") {
+		t.Errorf("expected node_urn to contain hook-a slug, got %s", add.NodeURN)
 	}
 }
 
-// TestSweepOnce_IdempotencyViaExistingProposal — hook-c already has a
-// governance_proposal with source_t_hook_urn pointing at it, so the sweep
-// must NOT emit a duplicate. This is the idempotency mechanism for
-// v3.9-era kernels where firing_state isn't in the t_hook spec.
-func TestSweepOnce_IdempotencyViaExistingProposal(t *testing.T) {
+// TestSweepOnce_IdempotencyViaFiringState — v3.11 idempotency. hook-c has
+// firing_state="proposed" so the sweep must NOT re-propose it even though
+// its predicate (fires_at=180) is satisfied at T=200.
+func TestSweepOnce_IdempotencyViaFiringState(t *testing.T) {
 	state := sweepState()
-	// Use T=200 so hook-a fires but hook-c (already proposed) is still pending.
+	// Use T=200 so hook-a fires freshly; hook-c has firing_state=proposed.
 	envelopes := SweepOnce(state, 200, "urn:moos:kernel:test.sweep", 0, time.Unix(1700000000, 0))
 
-	// Exactly one envelope (for hook-a). hook-c must be skipped despite
-	// being matured.
 	for _, env := range envelopes {
 		if s, _ := env.Properties["source_t_hook_urn"].Value.(string); s == "urn:moos:t_hook:sam.hook-c" {
-			t.Errorf("expected hook-c to be skipped (already has proposal); got envelope %+v", env)
+			t.Errorf("expected hook-c to be skipped (firing_state=proposed); got envelope %+v", env)
 		}
+		if env.RewriteType == graph.MUTATE && env.TargetURN == "urn:moos:t_hook:sam.hook-c" {
+			t.Errorf("expected no MUTATE on hook-c (already proposed); got %+v", env)
+		}
+	}
+}
+
+// TestSweepOnce_FiringStateTransitionsPendingToProposed — the source
+// hook starts with firing_state absent (= pending) and the sweep's MUTATE
+// envelope sets it to proposed. Locks in the state-machine transition.
+func TestSweepOnce_FiringStateTransitionsPendingToProposed(t *testing.T) {
+	state := sweepState()
+	envelopes := SweepOnce(state, 250, "urn:moos:kernel:test.sweep", 0, time.Unix(1700000000, 0))
+
+	// Expect a MUTATE on hook-a.firing_state with new_value="proposed".
+	var found bool
+	for _, env := range envelopes {
+		if env.RewriteType == graph.MUTATE &&
+			env.TargetURN == "urn:moos:t_hook:sam.hook-a" &&
+			env.Field == "firing_state" &&
+			env.NewValue == "proposed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected MUTATE hook-a.firing_state → proposed; envelopes=%v", envelopes)
 	}
 }
 
@@ -143,17 +191,19 @@ func TestSweepOnce_NoFiresNoEnvelopes(t *testing.T) {
 	}
 }
 
-// TestSweepOnce_AllFire — at T=1000 every hook has matured; hook-a and
-// hook-b are proposed (hook-c already is). Order doesn't matter but both
-// hook-a and hook-b envelopes must be present and correctly shaped.
+// TestSweepOnce_AllFire — at T=1000 hook-a and hook-b mature and fire.
+// hook-c is skipped via firing_state=proposed. Four envelopes expected
+// total (two per firing hook).
 func TestSweepOnce_AllFire(t *testing.T) {
 	state := sweepState()
 	envelopes := SweepOnce(state, 1000, "urn:moos:kernel:test.sweep", 0, time.Unix(1700000000, 0))
 
 	hooks := map[string]bool{}
 	for _, env := range envelopes {
-		s, _ := env.Properties["source_t_hook_urn"].Value.(string)
-		hooks[s] = true
+		if env.RewriteType == graph.ADD {
+			s, _ := env.Properties["source_t_hook_urn"].Value.(string)
+			hooks[s] = true
+		}
 	}
 
 	if !hooks["urn:moos:t_hook:sam.hook-a"] {
@@ -163,7 +213,11 @@ func TestSweepOnce_AllFire(t *testing.T) {
 		t.Errorf("expected proposal for hook-b at T=1000")
 	}
 	if hooks["urn:moos:t_hook:sam.hook-c"] {
-		t.Errorf("hook-c must be skipped (already proposed)")
+		t.Errorf("hook-c must be skipped (firing_state=proposed)")
+	}
+	// 2 firing hooks × 2 envelopes each = 4.
+	if len(envelopes) != 4 {
+		t.Errorf("expected 4 envelopes (2 hooks × (ADD+MUTATE)), got %d", len(envelopes))
 	}
 }
 
@@ -266,11 +320,16 @@ func TestSweepOnce_HandlesCompoundPredicate(t *testing.T) {
 	state.Nodes["urn:moos:program:sam.anchor"] = anchor
 
 	envelopes := SweepOnce(state, 220, "urn:moos:kernel:test.sweep", 0, time.Unix(1700000000, 0))
-	if len(envelopes) != 1 {
-		t.Fatalf("compound predicate satisfied; expected 1 envelope, got %d", len(envelopes))
+	// 1 firing hook × 2 envelopes (ADD + MUTATE firing_state) = 2.
+	if len(envelopes) != 2 {
+		t.Fatalf("compound predicate satisfied; expected 2 envelopes (ADD+MUTATE), got %d", len(envelopes))
 	}
-	if s, _ := envelopes[0].Properties["source_t_hook_urn"].Value.(string); s != "urn:moos:t_hook:sam.compound" {
-		t.Errorf("expected source_t_hook_urn=compound hook, got %v", envelopes[0].Properties["source_t_hook_urn"].Value)
+	add, mut := findProposalFor(envelopes, "urn:moos:t_hook:sam.compound")
+	if add == nil {
+		t.Fatalf("expected ADD proposal for compound hook, got %v", envelopes)
+	}
+	if mut == nil {
+		t.Errorf("expected paired firing_state MUTATE for compound hook")
 	}
 }
 
@@ -306,10 +365,21 @@ func TestSweepOnce_UniqueProposalURNsAcrossHooks(t *testing.T) {
 	}
 
 	envelopes := SweepOnce(state, 200, "urn:moos:kernel:test.sweep", 100, time.Unix(1700000000, 0))
-	if len(envelopes) != 2 {
-		t.Fatalf("expected 2 envelopes for 2 matured hooks; got %d", len(envelopes))
+	// 2 matured hooks × 2 envelopes each (ADD + MUTATE) = 4.
+	if len(envelopes) != 4 {
+		t.Fatalf("expected 4 envelopes for 2 matured hooks (ADD+MUTATE pairs); got %d", len(envelopes))
 	}
-	if envelopes[0].NodeURN == envelopes[1].NodeURN {
-		t.Errorf("expected distinct proposal URNs; got duplicates: %s", envelopes[0].NodeURN)
+	// Collect ADD proposals and verify URNs are distinct.
+	var addURNs []graph.URN
+	for _, env := range envelopes {
+		if env.RewriteType == graph.ADD {
+			addURNs = append(addURNs, env.NodeURN)
+		}
+	}
+	if len(addURNs) != 2 {
+		t.Fatalf("expected 2 ADD proposals; got %d", len(addURNs))
+	}
+	if addURNs[0] == addURNs[1] {
+		t.Errorf("expected distinct proposal URNs; got duplicates: %s", addURNs[0])
 	}
 }

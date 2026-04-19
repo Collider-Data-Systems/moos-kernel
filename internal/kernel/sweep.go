@@ -66,47 +66,41 @@ const DefaultSweepActor graph.URN = "urn:moos:kernel:sweep"
 // a snapshot-time `now` so all proposals in one sweep share a single
 // timestamp; this also makes the function testable without a clock stub.
 //
-// Idempotency: hooks that already have a matching governance_proposal
-// (by source_t_hook_urn equality) are skipped.
+// Idempotency (v3.11+): hooks with firing_state ∈ {"", "pending"} are
+// eligible to fire; anything else (proposed | approved | rejected |
+// applied | closed) is skipped. Empty-string treatment matches the
+// v3.11 spec default of pending so pre-v3.11 hooks work without a
+// migration write.
 //
-// baseLogSeq is used only for URN disambiguation across hooks within a
-// single tick — it's appended to the URN suffix so two hooks firing in
-// the same tick get distinct proposal URNs. The offset starts at 1 so
-// the sequence matches the log_seq that ApplyProgram will assign when
-// the envelopes actually append (PR #12 review — Gemini).
+// baseLogSeq is a STABLE-for-the-tick prefix baked into the generated
+// proposal URN for readability. It is NOT guaranteed to match the
+// actual log_seq the envelope ends up carrying when ApplyProgram
+// appends — reading logSeq outside the write lock is racy. The per-
+// tick `emitted` counter is what actually provides uniqueness across
+// hooks in a single tick (PR #25 review — Gemini).
 func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq int64, now time.Time) []graph.Envelope {
-	// Build the idempotency set via the by-type accessor: only
-	// governance_proposal nodes need to be visited. O(proposals) on
-	// production states (indexed); O(all-nodes) fallback on un-indexed
-	// test fixtures.
-	proposedHooks := make(map[graph.URN]struct{})
-	for _, propURN := range state.NodesOfType("governance_proposal") {
-		n, ok := state.Nodes[propURN]
-		if !ok {
-			continue // index drift (should not happen); skip
-		}
-		p, ok := n.Properties["source_t_hook_urn"]
-		if !ok {
-			continue
-		}
-		s, _ := p.Value.(string)
-		if s != "" {
-			proposedHooks[graph.URN(s)] = struct{}{}
-		}
-	}
-
 	var envelopes []graph.Envelope
 	emitted := int64(0)
 	nowStr := now.UTC().Format(time.RFC3339)
 
-	// Walk only the t_hook bucket rather than every node in the graph.
+	// v3.11 ontology introduced t_hook.firing_state. The sweep filters on
+	// firing_state ∈ {"", "pending"} — missing field is treated as pending
+	// per the spec's "default": "pending" clause. Any other value means
+	// the hook is already past the pending boundary (proposed, approved,
+	// applied, rejected, closed) and the sweep must NOT re-propose it.
+	//
+	// This replaces the v3.10 O(proposals) scan of governance_proposals
+	// with an O(1) per-hook predicate. The idempotency contract is now
+	// visible on the hook itself, not reverse-derived from proposal
+	// existence — matters for the approver reactor that needs to see
+	// a clean state machine.
 	for _, hookURN := range state.NodesOfType("t_hook") {
 		n, ok := state.Nodes[hookURN]
 		if !ok {
 			continue
 		}
-		// Idempotency check: already proposed this hook → skip.
-		if _, already := proposedHooks[n.URN]; already {
+		// Idempotency: only pending (or unset, which defaults to pending) hooks fire.
+		if fs := firingStateOf(n); fs != "" && fs != "pending" {
 			continue
 		}
 		// Read the predicate. Missing or nil → skip.
@@ -117,32 +111,36 @@ func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq
 		// Evaluate against the state we received. EvaluateThookPredicate
 		// handles the json round-trip when the value arrives from log
 		// replay as map[string]any; returns false on malformed kinds.
-		// (Previously took &stateCopy to defend against mutation inside
-		// the evaluator — the evaluator is pure, so passing &state directly
-		// is both correct and avoids a misleading shallow copy whose
-		// underlying maps still aliased the original.)
 		if !reactive.EvaluateThookPredicate(predProp.Value, &state, currentT) {
 			continue
 		}
 
-		// Compose the proposal envelope. The URN encodes the source hook
-		// slug + calendar-T + sequence offset so operators can trace it.
-		// Offset starts at 1 to align with the log_seq ApplyProgram will
-		// later assign to the envelope (baseLogSeq+1, baseLogSeq+2, ...).
+		// A firing hook produces TWO envelopes in the same ApplyProgram
+		// batch so they land atomically:
+		//   1. ADD   a governance_proposal node
+		//   2. MUTATE the source hook's firing_state pending → proposed
+		//
+		// ApplyProgram is all-or-nothing, so if either fails (e.g. URN
+		// collision on the proposal, or ontology validation rejects the
+		// MUTATE) neither lands and the next tick retries.
+		//
+		// URN disambiguation: the proposal URN embeds hook slug + T-day +
+		// a per-tick counter (`emitted`). baseLogSeq is a stable tick-wide
+		// prefix read from rt.logSeq at the start of the tick; it's NOT
+		// promised to match the actual log_seq the envelope ends up
+		// carrying (PR #25 review — Gemini flagged the race). The
+		// suffix only needs to be unique across hooks within this tick,
+		// and across ticks of this sweep goroutine; `emitted` covers
+		// both because ApplyProgram is locked and a single goroutine
+		// drives the sweep.
 		hookSlug := slugFromURN(n.URN)
 		emitted++
-		proposalURN := graph.URN(fmt.Sprintf("urn:moos:proposal:kernel.%s-t%d-seq%d", hookSlug, currentT, baseLogSeq+emitted))
+		proposalURN := graph.URN(fmt.Sprintf("urn:moos:proposal:kernel.%s-t%d-tick%d-n%d", hookSlug, currentT, baseLogSeq, emitted))
 
 		title := fmt.Sprintf("Fire t_hook %s at T=%d", n.URN, currentT)
 
-		// Extras — only set when the source hook actually carries them, so
-		// we don't ADD a governance_proposal with nil-valued breadcrumbs
-		// that give approvers a false sense of traceability (PR #12
-		// review — Copilot).
 		props := map[string]graph.Property{
-			// Required immutable property per v3.9 ontology.
-			"title": {Value: title, Mutability: "immutable"},
-			// Mutable-with-principal-scope per spec; approver flips this.
+			"title":             {Value: title, Mutability: "immutable"},
 			"status":            {Value: "pending", Mutability: "mutable", AuthorityScope: "principal"},
 			"created_at":        {Value: nowStr, Mutability: "immutable"},
 			"source_t_hook_urn": {Value: string(n.URN), Mutability: "immutable"},
@@ -155,16 +153,57 @@ func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq
 			props["owner_urn"] = graph.Property{Value: p.Value, Mutability: "immutable"}
 		}
 
-		envelopes = append(envelopes, graph.Envelope{
-			RewriteType: graph.ADD,
-			Actor:       actor,
-			NodeURN:     proposalURN,
-			TypeID:      "governance_proposal",
-			Properties:  props,
-		})
+		// RewriteCategory is intentionally omitted on both envelopes:
+		//
+		//   - The ADD creates a governance_proposal NODE. Node creation
+		//     is typed by type_id; no WF category applies. (PR #25
+		//     review — Gemini suggested WF13; WF13's allowed_rewrites
+		//     are LINK/UNLINK/MUTATE, not ADD, and WF13 models a
+		//     governance_proposal PROMOTING to a target, not the
+		//     proposal's creation. We don't carry a WF here.)
+		//
+		//   - The MUTATE on firing_state is ALWAYS additive on first
+		//     firing (field absent on the hook → pending → proposed).
+		//     Additive MUTATE validation doesn't require a
+		//     rewrite_category per operad.ValidateMUTATE. For future
+		//     non-additive transitions (approver reactor: proposed →
+		//     applied; reopens_at: applied → pending) a WF category
+		//     will be needed. TODO(WF): either extend WF17 Reactive
+		//     mutate_scope to include firing_state, or introduce a new
+		//     WF21 "Reactive firing lifecycle". Pick when the approver
+		//     reactor PR lands.
+		envelopes = append(envelopes,
+			graph.Envelope{
+				RewriteType: graph.ADD,
+				Actor:       actor,
+				NodeURN:     proposalURN,
+				TypeID:      "governance_proposal",
+				Properties:  props,
+			},
+			graph.Envelope{
+				RewriteType: graph.MUTATE,
+				Actor:       actor,
+				TargetURN:   n.URN,
+				Field:       "firing_state",
+				NewValue:    "proposed",
+			},
+		)
+		emitted++
 	}
 
 	return envelopes
+}
+
+// firingStateOf reads the t_hook's firing_state property. Returns "" when
+// the property is absent — callers should treat empty-string as pending
+// (the v3.11 default) to keep pre-v3.11 hooks working.
+func firingStateOf(n graph.Node) string {
+	p, ok := n.Properties["firing_state"]
+	if !ok || p.Value == nil {
+		return ""
+	}
+	s, _ := p.Value.(string)
+	return s
 }
 
 // slugFromURN returns the final colon-delimited segment of a URN. Used to
