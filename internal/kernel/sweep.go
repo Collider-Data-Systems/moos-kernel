@@ -10,6 +10,7 @@ import (
 
 	"moos/kernel/internal/graph"
 	"moos/kernel/internal/reactive"
+	"moos/kernel/internal/tday"
 )
 
 // ----------------------------------------------------------------------------
@@ -41,27 +42,14 @@ import (
 // Kernel does not track calendar-T itself (§M13); the caller supplies it.
 // RunTimedSweep derives T from wall-clock via CurrentSweepTDay.
 
-// sweepTDay0 is T=0 as UTC: 2025-11-01 00:00 CEST = 2025-10-31 23:00 UTC.
-// Matches transport/server.go tDay0 so both derive the same T-day.
+// CurrentSweepTDay returns the current calendar T-day. Thin wrapper over
+// tday.Now so the sweep's wall-clock source is the same one the transport
+// layer uses — the round-9 review flagged the previous local epoch as a
+// drift risk, and T=169 consolidated both to internal/tday.
 //
-// TODO(drift): duplicated in transport/server.go tDay0 and cmd/moos/main.go
-// tDay. A future refactor should extract a shared package-level helper so
-// the epoch is defined exactly once (PR #12 review — Copilot + Gemini).
-var sweepTDay0 = time.Date(2025, 10, 31, 23, 0, 0, 0, time.UTC)
-
-// CurrentSweepTDay returns the current calendar T-day (wall-clock derived).
-// Exported so callers that want to trigger a manual sweep without the
-// goroutine can pass the same T to SweepOnce.
-//
-// Uses integer duration division (Duration / 24h) rather than
-// Duration.Hours()/24 to avoid float64 rounding errors near day boundaries.
-// A tick that crosses midnight UTC must flip to the next T-day atomically;
-// the float version could yield an off-by-one when Sub returned a value
-// like 86399.999999999 / 24 ≈ 3599.99999... truncating down by one (PR
-// #12 review — Copilot).
-func CurrentSweepTDay() int {
-	return int(time.Since(sweepTDay0) / (24 * time.Hour))
-}
+// Kept exported for back-compat with callers that imported it before the
+// tday package existed; new code should call tday.Now directly.
+func CurrentSweepTDay() int { return tday.Now() }
 
 // DefaultSweepActor is the actor URN used by the sweep when ADDing
 // governance_proposal nodes. Override via Runtime.SetSweepActor before
