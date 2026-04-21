@@ -339,6 +339,69 @@ func TestReplay_PreservesPreM11Rewrites(t *testing.T) {
 	}
 }
 
+// TestApplyProgram_M11_InitialStateCheck_RejectsIntraBatchSessionReference
+// pins the design decision Guido flagged in the PR 30 review: the ApplyProgram
+// preflight checks §M11 against the initial state (the state at the start of
+// the batch), not against a working state that evolves envelope-by-envelope.
+// A program that ADDs a session in envelope 1 and references that session in
+// envelope 2's session_urn is REJECTED at preflight because the session does
+// not yet exist when liveness checks the second envelope.
+//
+// This constraint is by design:
+//
+//   - Emitter context (the session the rewrite runs under) is what §M11
+//     gates on — that session must pre-exist.
+//   - Session birth + first occupant is a bootstrap pattern, handled by
+//     SeedIfAbsent's structural skipLiveness bypass.
+//   - Normal user-space atomic batches do NOT typically create a session and
+//     emit from it in the same batch. If a future use case demands it, the
+//     fix is to thread a working-state through the preflight loop (a design
+//     change, not a bugfix).
+func TestApplyProgram_M11_InitialStateCheck_RejectsIntraBatchSessionReference(t *testing.T) {
+	rt := newLivenessRuntime(t)
+	injectOccupancy(rt,
+		"urn:moos:session:sam.governance",
+		"urn:moos:agent:claude",
+		"agent",
+	)
+	preLen := rt.LogLen()
+
+	program := []graph.Envelope{
+		// Envelope 1: claude (occupying sam.governance) ADDs a brand-new
+		// session node. Liveness passes because the emitter context is
+		// sam.governance (exists, occupied).
+		{
+			RewriteType: graph.ADD,
+			Actor:       "urn:moos:agent:claude",
+			SessionURN:  "urn:moos:session:sam.governance",
+			NodeURN:     "urn:moos:session:sam.newborn",
+			TypeID:      "session",
+		},
+		// Envelope 2: tries to emit UNDER the just-created session via an
+		// explicit session_urn pointing at it. This MUST fail preflight
+		// because the initial-state check does not see sam.newborn yet.
+		// If this ever starts passing, something changed in the preflight
+		// discipline and §M11 semantics need a fresh look.
+		{
+			RewriteType: graph.ADD,
+			Actor:       "urn:moos:agent:claude",
+			SessionURN:  "urn:moos:session:sam.newborn", // doesn't exist at batch start
+			NodeURN:     "urn:moos:program:intra-batch",
+			TypeID:      "program",
+		},
+	}
+	_, err := rt.ApplyProgram(program)
+	if err == nil {
+		t.Fatalf("intra-batch session reference should be rejected at preflight")
+	}
+	if !strings.Contains(err.Error(), "§M11") {
+		t.Errorf("error should cite §M11; got %q", err.Error())
+	}
+	if got := rt.LogLen(); got != preLen {
+		t.Errorf("no envelopes should have persisted; pre=%d post=%d", preLen, got)
+	}
+}
+
 // TestApply_M11_UnoccupiedSessionAsActor_Rejected pins the security fix
 // from the Copilot finding on session_context.go:80 — a session-as-actor
 // without a canonical has-occupant relation must be rejected, not passed
