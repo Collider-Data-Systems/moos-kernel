@@ -53,6 +53,23 @@ func TestResolveSessionForEnvelope_ActorIsSession(t *testing.T) {
 	}
 }
 
+// TestResolveSessionForEnvelope_ActorIsSession_Unoccupied pins the fix for
+// the Copilot finding on session_context.go:80 — a session-as-actor must
+// still be occupied to satisfy §M11. An orphan session (no has-occupant)
+// acting as its own envelope actor previously returned
+// ResolveSessionActorIsSession and bypassed liveness entirely. Now it
+// returns ResolveSessionAbsent and the liveness gate rejects.
+func TestResolveSessionForEnvelope_ActorIsSession_Unoccupied(t *testing.T) {
+	state := sessionContextFixture(false)
+	// session:sam.c is a session node with no has-occupant in the fixture.
+	res := ResolveSessionForEnvelope(state, graph.Envelope{
+		Actor: "urn:moos:session:sam.c",
+	})
+	if res.Kind != ResolveSessionAbsent {
+		t.Fatalf("kind = %v, want Absent for unoccupied session-as-actor", res.Kind)
+	}
+}
+
 func TestResolveSessionForEnvelope_ExplicitOK(t *testing.T) {
 	state := sessionContextFixture(false)
 	res := ResolveSessionForEnvelope(state, graph.Envelope{

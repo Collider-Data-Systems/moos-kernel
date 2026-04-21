@@ -62,7 +62,13 @@ const (
 // envelope per the §M11 resolver rules:
 //
 //  1. If env.Actor is a node of type "session", the actor IS the session;
-//     return ResolveSessionActorIsSession with SessionURN == env.Actor.
+//     return ResolveSessionActorIsSession with SessionURN == env.Actor —
+//     but ONLY if that session itself has a canonical has-occupant relation
+//     pointing at a principal (user or agent). An unoccupied session as
+//     actor is not §M11-compliant: there is no seated principal to gate
+//     against, so the resolver returns ResolveSessionAbsent rather than
+//     silently passing. This mirrors CheckAdminCapability's hop-through-
+//     has-occupant pattern in §M12.
 //  2. If env.SessionURN is set, verify it: must name a session node, that
 //     session must have has-occupant -> env.Actor. Success returns
 //     ResolveSessionExplicit. Any failure returns ResolveSessionExplicitMismatch.
@@ -74,8 +80,13 @@ const (
 // kernel.Runtime and consults this resolver plus SystemInternalEnvelope
 // for allowlisting.
 func ResolveSessionForEnvelope(state graph.GraphState, env graph.Envelope) ResolveSessionResult {
-	// Case 1 — actor is itself a session node. No hop needed.
+	// Case 1 — actor is itself a session node. Session identity is its own
+	// resolution, but the session must still be occupied — an unoccupied
+	// session cannot represent any principal and must not bypass §M11.
 	if actorNode, ok := state.Nodes[env.Actor]; ok && actorNode.TypeID == "session" {
+		if !sessionHasAnyOccupant(state, env.Actor) {
+			return ResolveSessionResult{Kind: ResolveSessionAbsent, SessionURN: env.Actor}
+		}
 		return ResolveSessionResult{Kind: ResolveSessionActorIsSession, SessionURN: env.Actor}
 	}
 
@@ -101,6 +112,17 @@ func ResolveSessionForEnvelope(state graph.GraphState, env graph.Envelope) Resol
 	default:
 		return ResolveSessionResult{Kind: ResolveSessionAmbiguous, Candidates: candidates}
 	}
+}
+
+// sessionHasAnyOccupant returns true when sessionURN has at least one
+// canonical (has-occupant, is-occupant-of) relation whose target is a
+// recognised principal (user or agent). Mirrors ResolveSessionOccupant
+// but without caring which principal — just that one exists. Used by
+// case 1 of ResolveSessionForEnvelope to block unoccupied-session-as-
+// actor bypass.
+func sessionHasAnyOccupant(state graph.GraphState, sessionURN graph.URN) bool {
+	_, ok := ResolveSessionOccupant(state, sessionURN)
+	return ok
 }
 
 // sessionHasOccupantTarget returns true when sessionURN has a canonical

@@ -98,8 +98,20 @@ func (rt *Runtime) applyWithOptions(env graph.Envelope, opts applyOptions) (grap
 	// §M11 liveness gate. Before operad validation so a rewrite with no
 	// session context fails fast without paying the structural-validation
 	// cost. The check is registry-aware: registry-less mode passes through.
+	//
+	// checkLiveness reads rt.state maps, so we hold the read-lock for its
+	// duration. Release before the write-lock below to avoid lock upgrade
+	// (Go's sync.RWMutex does not support upgrade). There is a tiny window
+	// between RUnlock and Lock where another goroutine could advance
+	// state — that's fine: checkLiveness' output is an assertion about
+	// state at the time of observation, not a guarantee about the moment
+	// the rewrite actually lands. The fold.Evaluate under the write-lock
+	// is the authoritative apply-time check for structural invariants.
 	if !opts.skipLiveness {
-		if err := rt.checkLiveness(env); err != nil {
+		rt.mu.RLock()
+		err := rt.checkLiveness(env)
+		rt.mu.RUnlock()
+		if err != nil {
 			return graph.EvalResult{}, err
 		}
 	}
@@ -172,14 +184,25 @@ func (rt *Runtime) applyWithOptions(env graph.Envelope, opts applyOptions) (grap
 // §M11 liveness is checked per-envelope before structural validation so a
 // single session-less envelope fails the whole batch fast.
 func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult, error) {
+	// Preflight under read-lock: §M11 liveness checks read rt.state maps,
+	// so we must hold the read-lock for the entire batch preflight. Held
+	// across all envelopes so liveness observations are consistent with
+	// each other. Release before acquiring the write-lock below (RWMutex
+	// does not support upgrade). Same apply-time guarantee as Apply:
+	// fold.EvaluateProgram under the write-lock is the authoritative
+	// check; preflight rejects early on clearly-bad batches.
+	rt.mu.RLock()
 	for _, env := range envelopes {
 		if err := rt.checkLiveness(env); err != nil {
+			rt.mu.RUnlock()
 			return nil, err
 		}
 		if err := rt.validate(env); err != nil {
+			rt.mu.RUnlock()
 			return nil, err
 		}
 	}
+	rt.mu.RUnlock()
 
 	rt.mu.Lock()
 	defer rt.mu.Unlock()

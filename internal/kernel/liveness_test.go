@@ -339,6 +339,57 @@ func TestReplay_PreservesPreM11Rewrites(t *testing.T) {
 	}
 }
 
+// TestApply_M11_UnoccupiedSessionAsActor_Rejected pins the security fix
+// from the Copilot finding on session_context.go:80 — a session-as-actor
+// without a canonical has-occupant relation must be rejected, not passed
+// through as ResolveSessionActorIsSession. Without this, an orphan
+// session could emit user-space rewrites and bypass §M11 entirely.
+func TestApply_M11_UnoccupiedSessionAsActor_Rejected(t *testing.T) {
+	rt := newLivenessRuntime(t)
+	// Session node exists but has no has-occupant.
+	rt.state.Nodes["urn:moos:session:sam.orphan"] = graph.Node{
+		URN: "urn:moos:session:sam.orphan", TypeID: "session",
+	}
+
+	env := graph.Envelope{
+		RewriteType: graph.ADD,
+		Actor:       "urn:moos:session:sam.orphan",
+		NodeURN:     "urn:moos:program:sneak",
+		TypeID:      "program",
+	}
+	_, err := rt.Apply(env)
+	if err == nil {
+		t.Fatalf("unoccupied session-as-actor should be rejected")
+	}
+	if !strings.Contains(err.Error(), "§M11") {
+		t.Errorf("error should cite §M11; got %q", err.Error())
+	}
+}
+
+// TestApply_M11_OccupiedSessionAsActor_Accepted is the positive pair —
+// a session that IS occupied (has-occupant points at a principal) can act
+// as envelope actor. Common pattern for kernel-internal session-heartbeat
+// and turn-count MUTATEs that carry session-as-actor.
+func TestApply_M11_OccupiedSessionAsActor_Accepted(t *testing.T) {
+	rt := newLivenessRuntime(t)
+	// Seat an agent on the session so it's genuinely occupied.
+	injectOccupancy(rt,
+		"urn:moos:session:sam.seated",
+		"urn:moos:agent:claude",
+		"agent",
+	)
+
+	env := graph.Envelope{
+		RewriteType: graph.ADD,
+		Actor:       "urn:moos:session:sam.seated", // session-as-actor
+		NodeURN:     "urn:moos:program:legal",
+		TypeID:      "program",
+	}
+	if _, err := rt.Apply(env); err != nil {
+		t.Fatalf("occupied session-as-actor should be accepted; got %v", err)
+	}
+}
+
 // TestApply_RegistryLess_LivenessNoop — when the Runtime has no registry
 // loaded (--ontology omitted), the liveness gate is a no-op. Preserves the
 // existing "registry-less mode" UX and matches the pattern used by the
