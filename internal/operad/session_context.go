@@ -228,25 +228,116 @@ func isInfrastructureType(t graph.TypeID) bool {
 	return false
 }
 
-// AdminScopeRewrite classifies whether an envelope touches admin-scope
-// surface per §M12. The admin scope covers:
+// ontologyGovernedTypes is the set of node types whose ADD or MUTATE
+// requires superadmin capability (§M12 Q3 case 2 per ffs0#33 Guido answers).
+// Any change to these types influences how the graph itself is grammared —
+// they are S2 infrastructure artifacts whose authority must route through
+// WF02 governs → role:superadmin, not ordinary occupant authority.
 //
-//  1. Mutations to properties with authority_scope == "kernel" on non-kernel
-//     nodes, when the actor is NOT a kernel URN (mitigates §M12 Q3 (3));
-//  2. ADDs or MUTATEs of ontology-governed node types (§M12 Q3 (2)):
-//     system_instruction, gate, twin_link, transport_binding, kernel.
+//   - system_instruction: S4 context overlay, shapes how downstream
+//     reads interpret the graph.
+//   - gate: fail-closed flow primitive (§M8); wrong gates brick Apply.
+//   - twin_link: kernel-replication pairing (§M9); wrong pairing
+//     corrupts the adjoint.
+//   - transport_binding: wire-protocol declaration; wrong binding
+//     breaks federation.
+//   - kernel: ADD kernel creates a new sovereign substrate — as
+//     ontology-adjacent as it gets (Guido flag on the M11/M12 plan).
+var ontologyGovernedTypes = map[graph.TypeID]struct{}{
+	"system_instruction":  {},
+	"gate":                {},
+	"twin_link":           {},
+	"transport_binding":   {},
+	"kernel":              {},
+}
+
+// AdminScopeRewrite classifies whether an envelope touches admin-scope
+// surface per §M12. The admin scope covers (per Guido's answers on
+// ffs0#33 and the M11/M12 implementation plan):
+//
+//  1. ADDs or MUTATEs of ontology-governed node types (system_instruction,
+//     gate, twin_link, transport_binding, kernel). Any change to the
+//     grammar of the graph itself flows through superadmin.
+//  2. MUTATEs of properties with authority_scope == "kernel" on non-kernel
+//     nodes. The authority declaration on the ontology says "only kernel
+//     URNs may change this", and §M12 extends that to "or a superadmin-
+//     capable actor". Non-kernel actors without superadmin fail closed.
 //  3. (Reserved for §M16) MUTATEs to the ontology file / version. Stays
 //     off until an ontology_publication node type lands.
 //
-// PR 3 ships this as the integration hook; the classifier currently returns
-// false (no envelopes admin-scope-gated) so §M12 is effectively dormant.
-// PR 4 fills in the logic. Keeping the call site plumbed means PR 4 is a
-// pure-additive diff to this one function plus its callers in kernel.
+// System-internal envelopes (kernel actors, infrastructure ADDs, sweep
+// WF13) are allowlisted by the §M11 gate BEFORE §M12 runs — a kernel
+// URN emitting an ontology-governed rewrite bypasses §M12 by design.
+// The gate (checkLiveness in kernel package) is where the allowlist
+// precedes the admin check.
 //
-// Parameter `state` is reserved for PR 4's property-lookup path; PR 3
-// passes it through without consulting it.
-func AdminScopeRewrite(env graph.Envelope, state graph.GraphState) bool {
-	_ = env
-	_ = state
+// The method takes registry access (vs. the PR 3 package-level form)
+// because case 2 requires looking up the type-spec authority_scope for
+// additive MUTATEs where the field is not yet on the node. For fields
+// already on the node, the existing Property.AuthorityScope is consulted
+// directly.
+func (r *Registry) AdminScopeRewrite(env graph.Envelope, state graph.GraphState) bool {
+	if r == nil {
+		return false
+	}
+
+	// Case 1 — ADD of ontology-governed type.
+	if env.RewriteType == graph.ADD {
+		if _, gov := ontologyGovernedTypes[env.TypeID]; gov {
+			return true
+		}
+		return false
+	}
+
+	// Case 1+2 — MUTATE on a node. Look up the node's type first.
+	if env.RewriteType == graph.MUTATE {
+		node, ok := state.Nodes[env.TargetURN]
+		if !ok {
+			// Target missing from state — fold will reject with ErrNodeNotFound
+			// at apply time. Not our problem to enforce admin-scope on a
+			// non-existent node.
+			return false
+		}
+
+		// Case 1 — target node is of an ontology-governed type.
+		if _, gov := ontologyGovernedTypes[node.TypeID]; gov {
+			return true
+		}
+
+		// Case 2 — kernel-authority property MUTATE on a non-kernel node.
+		// Check existing node properties first (cheap map lookup), then fall
+		// back to the registry type spec for additive MUTATE (field not yet
+		// present on the node).
+		if scope, ok := authorityScopeForField(r, node, env.Field); ok {
+			if scope == "kernel" && node.TypeID != "kernel" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// LINK / UNLINK are not admin-scope-gated in §M12 v1. A future PR could
+	// extend this (e.g. LINK to superadmin role requires superadmin), but
+	// that's outside the current doctrine scope.
 	return false
+}
+
+// authorityScopeForField returns the AuthorityScope for a field on a node,
+// preferring the live property record (reflects what actually landed) and
+// falling back to the type-spec declaration (for additive MUTATEs where
+// the field is not yet on the node). Returns "", false when the field is
+// unknown to both sources.
+func authorityScopeForField(r *Registry, node graph.Node, field string) (string, bool) {
+	if prop, ok := node.Properties[field]; ok {
+		return prop.AuthorityScope, true
+	}
+	typeSpec, hasType := r.NodeTypes[node.TypeID]
+	if !hasType {
+		return "", false
+	}
+	pspec, hasPspec := typeSpec.Properties[field]
+	if !hasPspec {
+		return "", false
+	}
+	return pspec.AuthorityScope, true
 }

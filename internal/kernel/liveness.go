@@ -72,10 +72,13 @@ func (rt *Runtime) checkLiveness(env graph.Envelope) error {
 			env.Actor)
 	}
 
-	// Step 3 — admin-scope gate (§M12 hook). Dormant in PR 3 — the
-	// classifier currently returns false for every envelope. PR 4 tightens
-	// this to check capability via operad.CheckAdminCapability.
-	if operad.AdminScopeRewrite(env, rt.state) {
+	// Step 3 — admin-scope gate (§M12). Classifies the envelope via the
+	// registry's AdminScopeRewrite method (sees type specs for property
+	// authority_scope lookup); if the envelope touches admin surface,
+	// the actor must hold superadmin capability via WF02 governs. Fails
+	// closed on any missing hop. The §M11 allowlist above already let
+	// kernel-actor envelopes through — they never reach this path.
+	if rt.registry.AdminScopeRewrite(env, rt.state) {
 		if !operad.CheckAdminCapability(rt.state, env.Actor) {
 			return fmt.Errorf("kernel(§M12): actor=%s lacks WF02 superadmin capability for admin-scope rewrite",
 				env.Actor)
