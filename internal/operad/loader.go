@@ -8,9 +8,11 @@ import (
 	"moos/kernel/internal/graph"
 )
 
-// LoadRegistry parses ontology.json (v3.6, codex-aligned format) and
-// builds a Registry. The ontology path should point to
-// ffs0/kb/superset/ontology.json or a copy of it.
+// LoadRegistry parses ontology.json and builds a Registry. The ontology
+// path should point to ffs0/kb/superset/ontology.json or a copy of it.
+// The parsed ontology version is captured on the returned Registry's
+// Version field; callers that care about schema pinning should read that
+// rather than assume a version here.
 //
 // If path is empty, returns an EmptyRegistry with a warning — the kernel
 // will run but without type validation.
@@ -140,7 +142,7 @@ func parseColorMatrix(raw map[string]map[string]any) PortColorMatrix {
 	return m
 }
 
-// --- raw JSON shapes for ontology.json v3.6 ---
+// --- raw JSON shapes for ontology.json ---
 
 type ontologyJSON struct {
 	Version string `json:"version"`
