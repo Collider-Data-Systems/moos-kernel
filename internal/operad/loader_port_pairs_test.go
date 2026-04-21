@@ -101,14 +101,25 @@ func TestLoadRegistry_AdditionalPortPairs(t *testing.T) {
 	}
 }
 
-// TestLoadRegistry_LoadsRealOntology_WF19Pairs is a belt-and-braces integration
-// check against the actual ontology.json at ffs0/kb/superset/ontology.json,
-// run when the file is present at its expected sibling path. The test
-// auto-skips when the path isn't available (e.g. in a detached build where
-// ffs0 is not a sibling), so it doesn't break isolated CI. When present, it
-// guarantees the loader sees all WF19 additional_port_pairs declared in the
-// canonical ontology.
+// TestLoadRegistry_LoadsRealOntology_WF19Pairs is an integration check
+// against the actual ontology.json at ffs0/kb/superset/ontology.json.
+// Guarded behind the MOOS_INTEGRATION=1 environment variable so regular
+// `go test ./...` runs remain fully hermetic — the sibling-layout
+// dependency is explicit opt-in, not silent-skip-on-layout-mismatch.
+//
+// To run locally:
+//
+//	MOOS_INTEGRATION=1 go test ./internal/operad/ -run LoadsRealOntology
+//
+// The search spans two candidate relative paths because the moos-kernel
+// repo may be checked out either alongside ffs0 or one directory deeper
+// (e.g. inside a Go workspace). The test fails (not skips) if
+// MOOS_INTEGRATION=1 is set but no candidate path resolves — that's a
+// real environment bug.
 func TestLoadRegistry_LoadsRealOntology_WF19Pairs(t *testing.T) {
+	if os.Getenv("MOOS_INTEGRATION") != "1" {
+		t.Skip("set MOOS_INTEGRATION=1 to run ontology integration check")
+	}
 	candidates := []string{
 		"../../../ffs0/kb/superset/ontology.json",
 		"../../../../ffs0/kb/superset/ontology.json",
@@ -121,7 +132,7 @@ func TestLoadRegistry_LoadsRealOntology_WF19Pairs(t *testing.T) {
 		}
 	}
 	if path == "" {
-		t.Skip("ontology.json not found at expected sibling paths; skipping integration check")
+		t.Fatalf("MOOS_INTEGRATION=1 but ontology.json not found at %v", candidates)
 	}
 
 	reg, err := LoadRegistry(path)

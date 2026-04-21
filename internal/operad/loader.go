@@ -81,15 +81,17 @@ func LoadRegistry(path string) (*Registry, error) {
 			pair := AdditionalPortPair{
 				SrcPort:          app.SrcPort,
 				TgtPort:          app.TgtPort,
+				SrcTypes:         make([]graph.TypeID, len(app.SrcTypes)),
+				TgtTypes:         make([]graph.TypeID, len(app.TgtTypes)),
 				AddedInVersion:   app.AddedInVersion,
 				PromotesFragment: app.PromotesFragment,
 				Description:      app.Description,
 			}
-			for _, t := range app.SrcTypes {
-				pair.SrcTypes = append(pair.SrcTypes, graph.TypeID(t))
+			for i, t := range app.SrcTypes {
+				pair.SrcTypes[i] = graph.TypeID(t)
 			}
-			for _, t := range app.TgtTypes {
-				pair.TgtTypes = append(pair.TgtTypes, graph.TypeID(t))
+			for i, t := range app.TgtTypes {
+				pair.TgtTypes[i] = graph.TypeID(t)
 			}
 			spec.AdditionalPortPairs = append(spec.AdditionalPortPairs, pair)
 		}

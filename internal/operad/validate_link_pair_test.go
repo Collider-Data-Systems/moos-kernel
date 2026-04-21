@@ -237,3 +237,179 @@ func TestReplay_GrandfathersNonCanonicalPortPair(t *testing.T) {
 	// test documents the invariant so any future change that starts folding
 	// through a validator surface here must confront the grandfathering rule.
 }
+
+// ------------------------------------------------------------------
+// Pair-level src_types / tgt_types enforcement in ValidateStrataLink
+// (T=171 round 11 PR 1 — review follow-up for Gemini HIGH + Copilot)
+// ------------------------------------------------------------------
+
+// buildStrataTestRegistry extends buildTestRegistry with the NodeTypeSpecs
+// ValidateStrataLink needs (stratum + existence) and re-declares WF19 with
+// a restricted has-occupant pair plus a wildcard-tgt pins-urn pair that
+// matches the v3.12 ontology shape.
+func buildStrataTestRegistry() *Registry {
+	reg := buildTestRegistry()
+	// Override WF19 with explicit top-level type lists (broader than pair-level).
+	reg.RewriteCategories[graph.WF19] = RewriteCategorySpec{
+		ID:              graph.WF19,
+		Name:            "Session governance",
+		AllowedRewrites: []graph.RewriteType{graph.LINK, graph.UNLINK, graph.MUTATE, graph.ADD},
+		SrcTypes:        []graph.TypeID{"session", "agent", "agent_session"},
+		TgtTypes:        []graph.TypeID{"kernel", "session", "agent_session", "user", "agent", "program"},
+		SrcPort:         "opens-on",
+		TgtPort:         "occupied-by",
+		AdditionalPortPairs: []AdditionalPortPair{
+			{
+				SrcPort:  "has-occupant",
+				TgtPort:  "is-occupant-of",
+				SrcTypes: []graph.TypeID{"session"},
+				TgtTypes: []graph.TypeID{"user", "agent"},
+			},
+			{
+				SrcPort:  "pins-urn",
+				TgtPort:  "pinned-by-session",
+				SrcTypes: []graph.TypeID{"session"},
+				TgtTypes: []graph.TypeID{"*"}, // wildcard — any node type accepted
+			},
+		},
+		Authority: "kernel",
+		SyncMode:  "local-only",
+	}
+	reg.NodeTypes["session"] = NodeTypeSpec{ID: "session", Stratum: "S2"}
+	reg.NodeTypes["user"] = NodeTypeSpec{ID: "user", Stratum: "S2"}
+	reg.NodeTypes["agent"] = NodeTypeSpec{ID: "agent", Stratum: "S2"}
+	reg.NodeTypes["program"] = NodeTypeSpec{ID: "program", Stratum: "S2"}
+	reg.NodeTypes["kernel"] = NodeTypeSpec{ID: "kernel", Stratum: "S2"}
+	return reg
+}
+
+func stateForStrataTest() graph.GraphState {
+	return graph.GraphState{
+		Nodes: map[graph.URN]graph.Node{
+			"urn:moos:session:t": {URN: "urn:moos:session:t", TypeID: "session"},
+			"urn:moos:agent:t":   {URN: "urn:moos:agent:t", TypeID: "agent"},
+			"urn:moos:user:t":    {URN: "urn:moos:user:t", TypeID: "user"},
+			"urn:moos:program:t": {URN: "urn:moos:program:t", TypeID: "program"},
+			"urn:moos:kernel:t":  {URN: "urn:moos:kernel:t", TypeID: "kernel"},
+		},
+		Relations: map[graph.URN]graph.Relation{},
+	}
+}
+
+// TestValidateStrataLink_AdditionalPair_TgtTypeOutsidePairRestriction is the
+// behavior change closing the Gemini HIGH-priority gap on PR #27. WF19's
+// top-level tgt_types includes "program", so the pair-matching step in
+// ValidateLINK accepts a session --has-occupant--> program LINK. Without
+// pair-level type enforcement, ValidateStrataLink also accepts it because
+// "program" is in WF19.TgtTypes. With pair-level enforcement, the LINK is
+// rejected because the has-occupant pair declares tgt_types=[user, agent]
+// and program is not in that narrower list.
+func TestValidateStrataLink_AdditionalPair_TgtTypeOutsidePairRestriction(t *testing.T) {
+	reg := buildStrataTestRegistry()
+	state := stateForStrataTest()
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:session:t",
+		SrcPort:         "has-occupant",
+		TgtURN:          "urn:moos:program:t", // allowed at WF level, banned at pair level
+		TgtPort:         "is-occupant-of",
+	}
+	err := reg.ValidateStrataLink(env, state)
+	if err == nil {
+		t.Fatalf("expected pair-level tgt_type rejection (program not in has-occupant pair tgt_types); got nil")
+	}
+	if !strings.Contains(err.Error(), "pair (has-occupant, is-occupant-of)") {
+		t.Errorf("error should name the pair; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "program") {
+		t.Errorf("error should name the offending type; got %q", err.Error())
+	}
+}
+
+func TestValidateStrataLink_AdditionalPair_SrcTypeOutsidePairRestriction(t *testing.T) {
+	reg := buildStrataTestRegistry()
+	state := stateForStrataTest()
+	// WF19.SrcTypes includes "agent", but the has-occupant pair restricts src
+	// to session only. agent-as-src should be rejected at pair level even
+	// though it passes the WF-level check.
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:agent:t", // WF accepts; pair rejects
+		SrcPort:         "has-occupant",
+		TgtURN:          "urn:moos:user:t",
+		TgtPort:         "is-occupant-of",
+	}
+	err := reg.ValidateStrataLink(env, state)
+	if err == nil {
+		t.Fatalf("expected pair-level src_type rejection (agent not in has-occupant pair src_types); got nil")
+	}
+	if !strings.Contains(err.Error(), "src type") {
+		t.Errorf("error should mention src type; got %q", err.Error())
+	}
+}
+
+func TestValidateStrataLink_AdditionalPair_CanonicalTypesAccepted(t *testing.T) {
+	// Sanity check: the canonical session → user via has-occupant stays accepted.
+	reg := buildStrataTestRegistry()
+	state := stateForStrataTest()
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:session:t",
+		SrcPort:         "has-occupant",
+		TgtURN:          "urn:moos:user:t",
+		TgtPort:         "is-occupant-of",
+	}
+	if err := reg.ValidateStrataLink(env, state); err != nil {
+		t.Fatalf("canonical has-occupant shape rejected: %v", err)
+	}
+}
+
+func TestValidateStrataLink_AdditionalPair_WildcardTgtType(t *testing.T) {
+	// WF19.pins-urn pair declares tgt_types=["*"] — any tgt type accepted.
+	// Pinning a program is legal; pinning a kernel, user, agent all legal.
+	reg := buildStrataTestRegistry()
+	state := stateForStrataTest()
+	cases := []graph.URN{
+		"urn:moos:program:t",
+		"urn:moos:kernel:t",
+		"urn:moos:user:t",
+		"urn:moos:agent:t",
+	}
+	for _, tgt := range cases {
+		env := graph.Envelope{
+			RewriteType:     graph.LINK,
+			RewriteCategory: graph.WF19,
+			SrcURN:          "urn:moos:session:t",
+			SrcPort:         "pins-urn",
+			TgtURN:          tgt,
+			TgtPort:         "pinned-by-session",
+		}
+		if err := reg.ValidateStrataLink(env, state); err != nil {
+			t.Errorf("pins-urn wildcard pair rejected tgt %s: %v", tgt, err)
+		}
+	}
+}
+
+func TestValidateStrataLink_PrimaryPair_UsesWFLevelTypesOnly(t *testing.T) {
+	// Primary pair matches bypass the pair-level check by design (rule 3 is
+	// for *additional* pairs only). Confirm a primary-pair LINK with a target
+	// type that's in WF.TgtTypes but would fail the has-occupant pair rule
+	// still validates. session → program via opens-on/occupied-by is valid
+	// under WF19.TgtTypes (includes program).
+	reg := buildStrataTestRegistry()
+	state := stateForStrataTest()
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:session:t",
+		SrcPort:         "opens-on",
+		TgtURN:          "urn:moos:program:t",
+		TgtPort:         "occupied-by",
+	}
+	if err := reg.ValidateStrataLink(env, state); err != nil {
+		t.Errorf("primary-pair LINK with WF-legal types rejected: %v", err)
+	}
+}

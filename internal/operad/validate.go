@@ -2,6 +2,7 @@ package operad
 
 import (
 	"fmt"
+	"strings"
 
 	"moos/kernel/internal/graph"
 )
@@ -34,7 +35,7 @@ func (r *Registry) ValidateADD(env graph.Envelope) error {
 // ontology.json (e.g. WF19 has-occupant/is-occupant-of, pins-urn/pinned-by-session)
 // are now validated — previously they slipped through when the loader didn't
 // consume the field. Prospective only: replay of pre-PR-1 logs via fold runs
-// without re-validation, so historical non-canonical relations (e.g. an LINK
+// without re-validation, so historical non-canonical relations (e.g. a LINK
 // recorded at v3.11 with a typo'd tgt_port) persist in state. Correction of
 // such relations is via new compensating UNLINK+re-LINK rewrites, not via
 // retroactive validator action.
@@ -55,9 +56,10 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 	}
 
 	// Port pair must match one of the WF's declared pairs (primary or additional).
-	// Only enforced when the WF actually declares a primary pair; empty means the
-	// WF is a degenerate or spec-absent category — keep the old permissive
-	// behavior in that case.
+	// Only enforced when the WF declares at least one pair — whether a primary
+	// pair, additional pairs, or both. Spec-absent WFs (no declared pairs at
+	// all) keep the legacy permissive behavior so partial registries and test
+	// fixtures that omit port specs still validate.
 	if wfSpec.SrcPort != "" || wfSpec.TgtPort != "" || len(wfSpec.AdditionalPortPairs) > 0 {
 		if !linkPairDeclared(wfSpec, env.SrcPort, env.TgtPort) {
 			return fmt.Errorf("operad: port pair (%s, %s) not declared for %s; expected %s",
@@ -107,11 +109,20 @@ func describeDeclaredPairs(wfSpec RewriteCategorySpec) string {
 	if len(pairs) == 0 {
 		return "(none declared)"
 	}
-	out := pairs[0]
-	for _, p := range pairs[1:] {
-		out += " | " + p
+	return strings.Join(pairs, " | ")
+}
+
+// matchingAdditionalPair returns the AdditionalPortPair on wfSpec whose
+// (SrcPort, TgtPort) matches the given ports, plus a hit flag. The primary
+// pair is NOT searched here — callers handle it separately because its
+// type restrictions already come from wfSpec.SrcTypes/TgtTypes.
+func matchingAdditionalPair(wfSpec RewriteCategorySpec, src, tgt string) (AdditionalPortPair, bool) {
+	for _, p := range wfSpec.AdditionalPortPairs {
+		if p.SrcPort == src && p.TgtPort == tgt {
+			return p, true
+		}
 	}
-	return out
+	return AdditionalPortPair{}, false
 }
 
 // ValidateMUTATE checks mutability, WF scope, and authority constraints on a MUTATE envelope.
@@ -286,6 +297,13 @@ func containsString(list []string, s string) bool {
 //     Projection nodes are read-only toward lower strata (M5).
 //  2. If the WF category declares non-empty src_types or tgt_types, the actual
 //     node types must be in those lists. (Previously stubbed — now enforced.)
+//  3. If the LINK matches a declared AdditionalPortPair (not the primary pair),
+//     and that pair carries non-empty SrcTypes/TgtTypes restrictions, the actual
+//     node types must additionally satisfy the pair-level restriction. The
+//     ontology uses this to narrow an extension pair below the WF's overall
+//     src/tgt lists — e.g. WF19's has-occupant pair restricts to session→
+//     (user|agent) even though WF19 itself accepts session|agent|agent_session
+//     as sources and a broader tgt_types list. (T=171 round 11 PR 1.)
 func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState) error {
 	srcNode, srcOk := state.Nodes[env.SrcURN]
 	tgtNode, tgtOk := state.Nodes[env.TgtURN]
@@ -326,6 +344,25 @@ func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState
 	if len(wfSpec.TgtTypes) > 0 && !containsTypeID(wfSpec.TgtTypes, tgtNode.TypeID) {
 		return fmt.Errorf("operad: tgt type %q not in allowed list for %s: %v",
 			tgtNode.TypeID, env.RewriteCategory, wfSpec.TgtTypes)
+	}
+
+	// Rule 3: pair-level src_types/tgt_types enforcement. If the envelope
+	// matched a declared AdditionalPortPair rather than the WF's primary pair,
+	// and that pair declares its own non-empty SrcTypes/TgtTypes lists, those
+	// narrow the WF-level restriction and must also be satisfied. Primary-pair
+	// matches fall through — their types are already covered by rule 2.
+	if pair, ok := matchingAdditionalPair(wfSpec, env.SrcPort, env.TgtPort); ok {
+		if len(pair.SrcTypes) > 0 && !containsTypeID(pair.SrcTypes, srcNode.TypeID) {
+			return fmt.Errorf("operad: src type %q not allowed on pair (%s, %s) of %s: %v",
+				srcNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.SrcTypes)
+		}
+		// A tgt_types entry of "*" is a wildcard per the ontology convention
+		// (see WF19.pins-urn in ontology.json v3.12): any tgt type passes.
+		if len(pair.TgtTypes) > 0 && !containsTypeID(pair.TgtTypes, "*") &&
+			!containsTypeID(pair.TgtTypes, tgtNode.TypeID) {
+			return fmt.Errorf("operad: tgt type %q not allowed on pair (%s, %s) of %s: %v",
+				tgtNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.TgtTypes)
+		}
 	}
 	return nil
 }
