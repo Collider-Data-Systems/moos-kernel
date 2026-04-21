@@ -73,6 +73,28 @@ func LoadRegistry(path string) (*Registry, error) {
 				}
 			}
 		}
+		// Load additional_port_pairs (v3.10+ WF extension mechanism).
+		// Each declared pair is a legal (src_port, tgt_port) pairing for this WF
+		// in addition to the primary SrcPort/TgtPort. Pre-v3.10 loaders ignored
+		// the field; strict port-pair validation lands with this loader change.
+		for _, app := range wf.AdditionalPortPairs {
+			pair := AdditionalPortPair{
+				SrcPort:          app.SrcPort,
+				TgtPort:          app.TgtPort,
+				SrcTypes:         make([]graph.TypeID, len(app.SrcTypes)),
+				TgtTypes:         make([]graph.TypeID, len(app.TgtTypes)),
+				AddedInVersion:   app.AddedInVersion,
+				PromotesFragment: app.PromotesFragment,
+				Description:      app.Description,
+			}
+			for i, t := range app.SrcTypes {
+				pair.SrcTypes[i] = graph.TypeID(t)
+			}
+			for i, t := range app.TgtTypes {
+				pair.TgtTypes[i] = graph.TypeID(t)
+			}
+			spec.AdditionalPortPairs = append(spec.AdditionalPortPairs, pair)
+		}
 		reg.RewriteCategories[spec.ID] = spec
 	}
 
@@ -178,16 +200,27 @@ type rawPropertySpec struct {
 }
 
 type rawRewriteCategory struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	AllowedRewrites []string `json:"allowed_rewrites"`
-	SrcTypes        []string `json:"src_types"`
-	TgtTypes        []string `json:"tgt_types"`
-	SrcPort         string   `json:"src_port"`
-	TgtPort         string   `json:"tgt_port"`
-	Authority       string   `json:"authority"`
-	MutateScope     any      `json:"mutate_scope"` // []string or null or string
-	SyncMode        string   `json:"sync_mode"`
+	ID                  string                     `json:"id"`
+	Name                string                     `json:"name"`
+	AllowedRewrites     []string                   `json:"allowed_rewrites"`
+	SrcTypes            []string                   `json:"src_types"`
+	TgtTypes            []string                   `json:"tgt_types"`
+	SrcPort             string                     `json:"src_port"`
+	TgtPort             string                     `json:"tgt_port"`
+	AdditionalPortPairs []rawAdditionalPortPair    `json:"additional_port_pairs"`
+	Authority           string                     `json:"authority"`
+	MutateScope         any                        `json:"mutate_scope"` // []string or null or string
+	SyncMode            string                     `json:"sync_mode"`
+}
+
+type rawAdditionalPortPair struct {
+	SrcPort          string   `json:"src_port"`
+	TgtPort          string   `json:"tgt_port"`
+	SrcTypes         []string `json:"src_types"`
+	TgtTypes         []string `json:"tgt_types"`
+	AddedInVersion   string   `json:"added_in_version"`
+	PromotesFragment string   `json:"promotes_fragment"`
+	Description      string   `json:"description"`
 }
 
 type rawPortColorCompat struct {

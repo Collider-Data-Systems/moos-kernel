@@ -2,6 +2,7 @@ package operad
 
 import (
 	"fmt"
+	"strings"
 
 	"moos/kernel/internal/graph"
 )
@@ -27,6 +28,17 @@ func (r *Registry) ValidateADD(env graph.Envelope) error {
 }
 
 // ValidateLINK checks port, type, and color constraints on a LINK envelope.
+//
+// Port-pair validation (T=171 round 11 PR 1): the (src_port, tgt_port) pair
+// must match either the WF's primary (SrcPort, TgtPort) or one of its declared
+// AdditionalPortPairs. Pairs declared only on the AdditionalPortPairs list of
+// ontology.json (e.g. WF19 has-occupant/is-occupant-of, pins-urn/pinned-by-session)
+// are now validated — previously they slipped through when the loader didn't
+// consume the field. Prospective only: replay of pre-PR-1 logs via fold runs
+// without re-validation, so historical non-canonical relations (e.g. a LINK
+// recorded at v3.11 with a typo'd tgt_port) persist in state. Correction of
+// such relations is via new compensating UNLINK+re-LINK rewrites, not via
+// retroactive validator action.
 func (r *Registry) ValidateLINK(env graph.Envelope) error {
 	wfSpec, ok := r.RewriteCategories[env.RewriteCategory]
 	if !ok {
@@ -38,23 +50,29 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 		return fmt.Errorf("operad: rewrite_category %s does not allow LINK", env.RewriteCategory)
 	}
 
-	// Validate src type
-	srcNode, ok := r.NodeTypes[graph.TypeID("")] // filled below
-	_ = srcNode
-	// We validate src and tgt types are in the WF's declared lists
-	// (actual TypeID comes from the graph state at apply time — operad checks structural rules here)
-	_ = wfSpec.SrcTypes
-	_ = wfSpec.TgtTypes
-
 	// WF15 contract requirement is checked in fold — but double-check here as well
 	if env.RewriteCategory == graph.WF15 && env.ContractURN == "" {
 		return fmt.Errorf("operad: WF15 LINK requires contract_urn")
 	}
 
-	// Port color compatibility
+	// Port pair must match one of the WF's declared pairs (primary or additional).
+	// Only enforced when the WF declares at least one pair — whether a primary
+	// pair, additional pairs, or both. Spec-absent WFs (no declared pairs at
+	// all) keep the legacy permissive behavior so partial registries and test
+	// fixtures that omit port specs still validate.
+	if wfSpec.SrcPort != "" || wfSpec.TgtPort != "" || len(wfSpec.AdditionalPortPairs) > 0 {
+		if !linkPairDeclared(wfSpec, env.SrcPort, env.TgtPort) {
+			return fmt.Errorf("operad: port pair (%s, %s) not declared for %s; expected %s",
+				env.SrcPort, env.TgtPort, env.RewriteCategory,
+				describeDeclaredPairs(wfSpec))
+		}
+	}
+
+	// Port color compatibility (§12.2). Unknown colors remain permissive so
+	// registry gaps don't hard-block rewrites; strict pair validation above
+	// already catches typo'd ports.
 	srcColor, tgtColor, err := r.resolvePortColors(env.SrcPort, env.TgtPort)
 	if err != nil {
-		// Unknown port — warn but allow if registry is partial
 		return nil
 	}
 	if !r.PortColorMatrix.Allowed(srcColor, tgtColor, env.RewriteCategory) {
@@ -62,6 +80,49 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 			srcColor, tgtColor, env.RewriteCategory)
 	}
 	return nil
+}
+
+// linkPairDeclared reports whether (src, tgt) matches the WF's primary pair or
+// any of its additional_port_pairs.
+func linkPairDeclared(wfSpec RewriteCategorySpec, src, tgt string) bool {
+	if wfSpec.SrcPort == src && wfSpec.TgtPort == tgt {
+		return true
+	}
+	for _, p := range wfSpec.AdditionalPortPairs {
+		if p.SrcPort == src && p.TgtPort == tgt {
+			return true
+		}
+	}
+	return false
+}
+
+// describeDeclaredPairs renders the WF's accepted port pairs for error messages.
+// Primary pair first, additional pairs in declaration order.
+func describeDeclaredPairs(wfSpec RewriteCategorySpec) string {
+	pairs := make([]string, 0, 1+len(wfSpec.AdditionalPortPairs))
+	if wfSpec.SrcPort != "" || wfSpec.TgtPort != "" {
+		pairs = append(pairs, fmt.Sprintf("(%s, %s)", wfSpec.SrcPort, wfSpec.TgtPort))
+	}
+	for _, p := range wfSpec.AdditionalPortPairs {
+		pairs = append(pairs, fmt.Sprintf("(%s, %s)", p.SrcPort, p.TgtPort))
+	}
+	if len(pairs) == 0 {
+		return "(none declared)"
+	}
+	return strings.Join(pairs, " | ")
+}
+
+// matchingAdditionalPair returns the AdditionalPortPair on wfSpec whose
+// (SrcPort, TgtPort) matches the given ports, plus a hit flag. The primary
+// pair is NOT searched here — callers handle it separately because its
+// type restrictions already come from wfSpec.SrcTypes/TgtTypes.
+func matchingAdditionalPair(wfSpec RewriteCategorySpec, src, tgt string) (AdditionalPortPair, bool) {
+	for _, p := range wfSpec.AdditionalPortPairs {
+		if p.SrcPort == src && p.TgtPort == tgt {
+			return p, true
+		}
+	}
+	return AdditionalPortPair{}, false
 }
 
 // ValidateMUTATE checks mutability, WF scope, and authority constraints on a MUTATE envelope.
@@ -175,7 +236,10 @@ func portColorFromName(port string) graph.PortColor {
 	case "participates", "participated-by", "focus", "on",
 		"anchors", "anchor", "causes", "summarizes", "daily-summary", "depends-on", "depended-by", "participant",
 		"triggers", "triggered-by", "guards", "guarded-by", "emits", "emitted-by", "watches", "watched-by",
-		"has-occupant", "is-occupant-of": // v3.10 WF19 session-occupancy port pair (§M19)
+		"has-occupant", "is-occupant-of", // v3.10 WF19 session-occupancy port pair (§M19)
+		"pins-urn", "pinned-by-session", // v3.12 WF19 session pins (§M18, D19.3)
+		"filtered-by", "filters-session", // v3.12 WF19 session filter binding (§M18, D19.4)
+		"mounts-tool", "tool-mounted-in-session": // v3.12 WF19 session tool mount (§M20, D20.1)
 		return graph.ColorWorkflow
 	case "projected-to", "rendered-as", "displayed-as":
 		return graph.ColorProjection
@@ -233,6 +297,13 @@ func containsString(list []string, s string) bool {
 //     Projection nodes are read-only toward lower strata (M5).
 //  2. If the WF category declares non-empty src_types or tgt_types, the actual
 //     node types must be in those lists. (Previously stubbed — now enforced.)
+//  3. If the LINK matches a declared AdditionalPortPair (not the primary pair),
+//     and that pair carries non-empty SrcTypes/TgtTypes restrictions, the actual
+//     node types must additionally satisfy the pair-level restriction. The
+//     ontology uses this to narrow an extension pair below the WF's overall
+//     src/tgt lists — e.g. WF19's has-occupant pair restricts to session→
+//     (user|agent) even though WF19 itself accepts session|agent|agent_session
+//     as sources and a broader tgt_types list. (T=171 round 11 PR 1.)
 func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState) error {
 	srcNode, srcOk := state.Nodes[env.SrcURN]
 	tgtNode, tgtOk := state.Nodes[env.TgtURN]
@@ -273,6 +344,25 @@ func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState
 	if len(wfSpec.TgtTypes) > 0 && !containsTypeID(wfSpec.TgtTypes, tgtNode.TypeID) {
 		return fmt.Errorf("operad: tgt type %q not in allowed list for %s: %v",
 			tgtNode.TypeID, env.RewriteCategory, wfSpec.TgtTypes)
+	}
+
+	// Rule 3: pair-level src_types/tgt_types enforcement. If the envelope
+	// matched a declared AdditionalPortPair rather than the WF's primary pair,
+	// and that pair declares its own non-empty SrcTypes/TgtTypes lists, those
+	// narrow the WF-level restriction and must also be satisfied. Primary-pair
+	// matches fall through — their types are already covered by rule 2.
+	if pair, ok := matchingAdditionalPair(wfSpec, env.SrcPort, env.TgtPort); ok {
+		if len(pair.SrcTypes) > 0 && !containsTypeID(pair.SrcTypes, srcNode.TypeID) {
+			return fmt.Errorf("operad: src type %q not allowed on pair (%s, %s) of %s: %v",
+				srcNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.SrcTypes)
+		}
+		// A tgt_types entry of "*" is a wildcard per the ontology convention
+		// (see WF19.pins-urn in ontology.json v3.12): any tgt type passes.
+		if len(pair.TgtTypes) > 0 && !containsTypeID(pair.TgtTypes, "*") &&
+			!containsTypeID(pair.TgtTypes, tgtNode.TypeID) {
+			return fmt.Errorf("operad: tgt type %q not allowed on pair (%s, %s) of %s: %v",
+				tgtNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.TgtTypes)
+		}
 	}
 	return nil
 }
