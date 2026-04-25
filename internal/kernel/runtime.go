@@ -166,14 +166,17 @@ func (rt *Runtime) applyWithOptions(env graph.Envelope, opts applyOptions) (grap
 		return graph.EvalResult{}, fmt.Errorf("kernel: persist: %w", err)
 	}
 
+	// §M13: resolve session against PRE-apply state (rt.state still
+	// holds the pre-fold view here). This handles envelopes that rotate
+	// has-occupant — e.g. UNLINK has-occupant + LINK has-occupant on the
+	// same actor — where post-apply resolution would diverge from the
+	// session §M11 validated against. Captured here, applied after commit.
+	bumpSessionURN, bumpOK := rt.resolveSessionForBump(env)
+
 	rt.state = next
 	rt.log = append(rt.log, persisted)
-	// §M13: increment local_t for the resolved session, regardless of
-	// whether actor is the session itself, an agent inferring via
-	// has-occupant, or an explicit env.SessionURN. Closes the
-	// session-actor-agent-lookup sub-program from T=168.
-	if sessionURN, ok := rt.resolveSessionForBump(env); ok {
-		rt.bumpSessionLocalT(sessionURN)
+	if bumpOK {
+		rt.bumpSessionLocalT(bumpSessionURN)
 	}
 	rt.broadcast(persisted)
 	rt.runReactive(persisted)
@@ -285,25 +288,31 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 		return nil, fmt.Errorf("kernel: persist program: %w", err)
 	}
 
+	// §M13: capture sessions to bump against the BATCH-INITIAL state
+	// (rt.state before commit). Mirrors §M11 preflight semantics
+	// (checkLivenessM11 also runs against pre-batch state) so a batch
+	// that itself rotates has-occupant still credits the originating
+	// session, not whatever has-occupant points at after the batch.
+	sessionsToBump := make(map[graph.URN]bool)
+	for _, env := range envelopes {
+		res := operad.ResolveSessionForEnvelope(rt.state, env)
+		switch res.Kind {
+		case operad.ResolveSessionExplicit,
+			operad.ResolveSessionInferred,
+			operad.ResolveSessionActorIsSession:
+			sessionsToBump[res.SessionURN] = true
+		}
+	}
+
 	rt.state = nextState
 	rt.log = append(rt.log, persisted...)
 	// §M13: bump local_t once per unique resolved session in the batch.
-	// Dedupe by session URN (not by actor) so a single batch from one agent
-	// to one session counts as one tick, while multi-session batches tick
-	// each session once. Closes the session-actor-agent-lookup sub-program
-	// from T=168.
-	{
-		seenSessions := make(map[graph.URN]bool)
-		for _, env := range envelopes {
-			sessionURN, ok := rt.resolveSessionForBump(env)
-			if !ok {
-				continue
-			}
-			if !seenSessions[sessionURN] {
-				seenSessions[sessionURN] = true
-				rt.bumpSessionLocalT(sessionURN)
-			}
-		}
+	// Dedupe by session URN (not by actor) so a single batch from one
+	// agent to one session counts as one tick, while multi-session
+	// batches tick each session once. Closes the session-actor-agent-
+	// lookup sub-program from T=168.
+	for sessionURN := range sessionsToBump {
+		rt.bumpSessionLocalT(sessionURN)
 	}
 	for _, p := range persisted {
 		rt.broadcast(p)

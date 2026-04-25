@@ -40,8 +40,11 @@ func readLocalT(t *testing.T, rt *Runtime, sessionURN graph.URN) int64 {
 }
 
 // m13TestRegistry extends the liveness registry with the local_t property
-// declaration on `session`. Without this, the bumpSessionLocalT MUTATE
-// can't inject a PropertySpec via injectPropertySpec → fold rejects.
+// declaration on `session`, and declares WF19 so UNLINK envelopes
+// targeting has-occupant relations validate cleanly. Without local_t in
+// the operad, bumpSessionLocalT's MUTATE can't inject a PropertySpec via
+// injectPropertySpec → fold rejects. Without WF19 declared, UNLINK
+// validation fails with "unknown rewrite_category".
 func m13TestRegistry() *operad.Registry {
 	reg := operad.EmptyRegistry()
 	for _, typeID := range []graph.TypeID{"session", "user", "agent", "workstation", "kernel", "program"} {
@@ -56,6 +59,20 @@ func m13TestRegistry() *operad.Registry {
 			}
 		}
 		reg.NodeTypes[typeID] = spec
+	}
+	// Declare WF19 with the has-occupant/is-occupant-of port pair so the
+	// rotation test's UNLINK passes ValidateUNLINK. Mirrors the v3.10+
+	// shape (D19.1 grammar_fragment) but minimal — TgtTypes restricted to
+	// agent so the rotation test's session→agent UNLINK validates.
+	reg.RewriteCategories[graph.WF19] = operad.RewriteCategorySpec{
+		ID:              graph.WF19,
+		Name:            "WF19",
+		AllowedRewrites: []graph.RewriteType{graph.LINK, graph.UNLINK},
+		SrcTypes:        []graph.TypeID{"session"},
+		TgtTypes:        []graph.TypeID{"agent", "user"},
+		SrcPort:         "has-occupant",
+		TgtPort:         "is-occupant-of",
+		Authority:       "kernel",
 	}
 	return reg
 }
@@ -209,6 +226,52 @@ func TestApplyProgram_DedupesBySessionNotActor(t *testing.T) {
 	}
 	if got := readLocalT(t, rt, sessionURN); got != 1 {
 		t.Errorf("session.local_t = %d, want 1 (one tick per session per batch, not per actor)", got)
+	}
+}
+
+// TestApply_BumpsLocalT_RotatesOccupancy — regression test for the Copilot-
+// flagged correctness bug on PR #33. An UNLINK envelope that removes the
+// only has-occupant edge between actor and session must still tick the
+// originating session's local_t. This works only because session resolution
+// is captured against the PRE-apply state (matching §M11 preflight). If
+// resolution ran against post-apply state, the resolver would return
+// Absent (the edge is gone) and local_t would not tick — silently dropping
+// the heartbeat for the very envelope that closed the seat.
+func TestApply_BumpsLocalT_RotatesOccupancy(t *testing.T) {
+	rt := newM13Runtime(t)
+	sessionURN := graph.URN("urn:moos:session:sam.solo")
+	agentURN := graph.URN("urn:moos:agent:claude")
+	injectOccupancy(rt, sessionURN, agentURN, "agent")
+
+	// Capture the relation URN that injectOccupancy created so we can
+	// UNLINK it. injectOccupancy writes a deterministic URN.
+	relURN := graph.URN("urn:moos:rel:" + string(sessionURN) + ".has-occupant." + string(agentURN))
+
+	// Sanity check the pre-state has the relation.
+	if _, ok := rt.state.Relations[relURN]; !ok {
+		t.Fatalf("pre-state missing has-occupant relation %s", relURN)
+	}
+
+	// UNLINK the has-occupant edge — actor's only seat — emitted by the
+	// agent itself. §M11 passes against pre-state (one session occupied);
+	// post-state has zero has-occupant relations.
+	env := graph.Envelope{
+		RewriteType:     graph.UNLINK,
+		Actor:           agentURN,
+		RelationURN:     relURN,
+		RewriteCategory: graph.WF19,
+	}
+	if _, err := rt.Apply(env); err != nil {
+		t.Fatalf("Apply UNLINK: %v", err)
+	}
+
+	// Post-apply: relation gone (the rotation), but local_t must still
+	// have ticked because resolution captured pre-state.
+	if _, ok := rt.state.Relations[relURN]; ok {
+		t.Errorf("post-state should not contain has-occupant relation; UNLINK didn't apply")
+	}
+	if got := readLocalT(t, rt, sessionURN); got != 1 {
+		t.Errorf("session.local_t = %d, want 1 — rotation envelope should still tick the originating session", got)
 	}
 }
 
