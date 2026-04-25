@@ -166,11 +166,17 @@ func (rt *Runtime) applyWithOptions(env graph.Envelope, opts applyOptions) (grap
 		return graph.EvalResult{}, fmt.Errorf("kernel: persist: %w", err)
 	}
 
+	// §M13: resolve session against PRE-apply state (rt.state still
+	// holds the pre-fold view here). This handles envelopes that rotate
+	// has-occupant — e.g. UNLINK has-occupant + LINK has-occupant on the
+	// same actor — where post-apply resolution would diverge from the
+	// session §M11 validated against. Captured here, applied after commit.
+	bumpSessionURN, bumpOK := rt.resolveSessionForBump(env)
+
 	rt.state = next
 	rt.log = append(rt.log, persisted)
-	// M1: increment session local_t if actor is a session node.
-	if actorNode, ok := rt.state.Nodes[env.Actor]; ok && actorNode.TypeID == "session" {
-		rt.bumpSessionLocalT(env.Actor)
+	if bumpOK {
+		rt.bumpSessionLocalT(bumpSessionURN)
 	}
 	rt.broadcast(persisted)
 	rt.runReactive(persisted)
@@ -282,19 +288,31 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 		return nil, fmt.Errorf("kernel: persist program: %w", err)
 	}
 
+	// §M13: capture sessions to bump against the BATCH-INITIAL state
+	// (rt.state before commit). Mirrors §M11 preflight semantics
+	// (checkLivenessM11 also runs against pre-batch state) so a batch
+	// that itself rotates has-occupant still credits the originating
+	// session, not whatever has-occupant points at after the batch.
+	sessionsToBump := make(map[graph.URN]bool)
+	for _, env := range envelopes {
+		res := operad.ResolveSessionForEnvelope(rt.state, env)
+		switch res.Kind {
+		case operad.ResolveSessionExplicit,
+			operad.ResolveSessionInferred,
+			operad.ResolveSessionActorIsSession:
+			sessionsToBump[res.SessionURN] = true
+		}
+	}
+
 	rt.state = nextState
 	rt.log = append(rt.log, persisted...)
-	// M1: bump local_t for all unique session actors in the batch.
-	{
-		seen := make(map[graph.URN]bool)
-		for _, env := range envelopes {
-			if !seen[env.Actor] {
-				seen[env.Actor] = true
-				if actorNode, ok := rt.state.Nodes[env.Actor]; ok && actorNode.TypeID == "session" {
-					rt.bumpSessionLocalT(env.Actor)
-				}
-			}
-		}
+	// §M13: bump local_t once per unique resolved session in the batch.
+	// Dedupe by session URN (not by actor) so a single batch from one
+	// agent to one session counts as one tick, while multi-session
+	// batches tick each session once. Closes the session-actor-agent-
+	// lookup sub-program from T=168.
+	for sessionURN := range sessionsToBump {
+		rt.bumpSessionLocalT(sessionURN)
 	}
 	for _, p := range persisted {
 		rt.broadcast(p)
@@ -639,6 +657,39 @@ func (rt *Runtime) bumpSessionLocalT(sessionURN graph.URN) {
 	rt.state = next
 	rt.log = append(rt.log, persisted)
 	rt.broadcast(persisted)
+}
+
+// resolveSessionForBump returns the session URN whose local_t should
+// increment for this envelope, regardless of whether env.Actor is itself
+// a session, an agent occupying exactly one session (inferred), or
+// accompanied by an explicit env.SessionURN.
+//
+// Returns ok=false when:
+//   - actor occupies multiple sessions and env.SessionURN is empty
+//     (ResolveSessionAmbiguous; gate rejects upstream — never reached
+//     here in practice, but defensive)
+//   - explicit env.SessionURN doesn't match has-occupant
+//     (ResolveSessionExplicitMismatch; gate rejects upstream)
+//   - actor occupies no session (ResolveSessionAbsent; system-internal
+//     allowlist path — kernel-actor sweep emissions, etc. — not
+//     session-scoped work, no bump warranted)
+//
+// Closes the §M13 sub-program `session-actor-agent-lookup` (T=168) by
+// covering the agent-actor inferred-session path that the prior
+// TypeID=="session" check skipped. See:
+// ffs0/kb/research/kernel/20260417-t187-kernel-proper.md §M13.
+//
+// Called with rt.mu already held (state read).
+func (rt *Runtime) resolveSessionForBump(env graph.Envelope) (graph.URN, bool) {
+	res := operad.ResolveSessionForEnvelope(rt.state, env)
+	switch res.Kind {
+	case operad.ResolveSessionExplicit,
+		operad.ResolveSessionInferred,
+		operad.ResolveSessionActorIsSession:
+		return res.SessionURN, true
+	default:
+		return "", false
+	}
 }
 
 // runHDCIndexAndDriftLocked updates the in-memory HDC index and emits type-drift claims.
