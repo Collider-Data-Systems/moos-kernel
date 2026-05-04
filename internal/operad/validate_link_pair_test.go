@@ -393,6 +393,37 @@ func TestValidateStrataLink_AdditionalPair_WildcardTgtType(t *testing.T) {
 	}
 }
 
+// TestValidateStrataLink_AdditionalPair_WildcardOverridesNarrowWF closes the
+// real-world bug surfaced on hp-laptop kernel at T=183: WF19's primary pair
+// declares tgt_types=[kernel, session, agent_session, user, agent], but the
+// pins-urn additional pair declares tgt_types=["*"]. Pre-fix, ValidateStrataLink
+// ran the WF-level check (rule 2) before the pair-level check (rule 3), which
+// rejected `session --pins-urn--> purpose` because "purpose" is not in the
+// WF-level TgtTypes. Post-fix, when the LINK matches an additional pair, rule 2
+// is skipped — the pair's own types (rule 3) govern. The wildcard ["*"] then
+// admits any tgt type for that specific port-pair.
+func TestValidateStrataLink_AdditionalPair_WildcardOverridesNarrowWF(t *testing.T) {
+	reg := buildStrataTestRegistry()
+	// Tighten WF19.TgtTypes to NOT include "program" — mirrors real ontology
+	// shape where pins-urn must still admit program-as-tgt via the wildcard.
+	spec := reg.RewriteCategories[graph.WF19]
+	spec.TgtTypes = []graph.TypeID{"kernel", "session", "agent_session", "user", "agent"}
+	reg.RewriteCategories[graph.WF19] = spec
+	state := stateForStrataTest()
+
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:session:t",
+		SrcPort:         "pins-urn",
+		TgtURN:          "urn:moos:program:t",
+		TgtPort:         "pinned-by-session",
+	}
+	if err := reg.ValidateStrataLink(env, state); err != nil {
+		t.Errorf("pins-urn additional pair with [*] tgt_types should accept program even when WF-level excludes it; got: %v", err)
+	}
+}
+
 func TestValidateStrataLink_PrimaryPair_UsesWFLevelTypesOnly(t *testing.T) {
 	// Primary pair matches bypass the pair-level check by design (rule 3 is
 	// for *additional* pairs only). Confirm a primary-pair LINK with a target
