@@ -332,37 +332,44 @@ func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState
 			env.SrcURN, srcNode.TypeID, tgtSpec.Stratum, env.TgtURN, tgtNode.TypeID)
 	}
 
-	// Rule 2: WF src_types / tgt_types enforcement.
 	wfSpec, ok := r.RewriteCategories[env.RewriteCategory]
 	if !ok {
 		return nil // unknown WF — already caught by ValidateLINK
 	}
-	if len(wfSpec.SrcTypes) > 0 && !containsTypeID(wfSpec.SrcTypes, srcNode.TypeID) {
-		return fmt.Errorf("operad: src type %q not in allowed list for %s: %v",
-			srcNode.TypeID, env.RewriteCategory, wfSpec.SrcTypes)
-	}
-	if len(wfSpec.TgtTypes) > 0 && !containsTypeID(wfSpec.TgtTypes, tgtNode.TypeID) {
-		return fmt.Errorf("operad: tgt type %q not in allowed list for %s: %v",
-			tgtNode.TypeID, env.RewriteCategory, wfSpec.TgtTypes)
+
+	// Determine whether the envelope matches an additional port pair. If yes,
+	// the pair's own SrcTypes/TgtTypes (rule 3) govern type allowance entirely;
+	// the WF-level lists describe the primary pair only and may legitimately be
+	// narrower than what an additional pair admits (e.g. WF19.pins-urn declares
+	// tgt_types=["*"] while WF19's primary pair restricts to kernel/session/etc).
+	// If no additional pair matches, rule 2 (WF-level) applies as the constraint
+	// on the primary pair.
+	pair, isAdditional := matchingAdditionalPair(wfSpec, env.SrcPort, env.TgtPort)
+
+	if !isAdditional {
+		// Rule 2: WF-level src_types / tgt_types enforcement (primary-pair LINKs).
+		if len(wfSpec.SrcTypes) > 0 && !containsTypeID(wfSpec.SrcTypes, srcNode.TypeID) {
+			return fmt.Errorf("operad: src type %q not in allowed list for %s: %v",
+				srcNode.TypeID, env.RewriteCategory, wfSpec.SrcTypes)
+		}
+		if len(wfSpec.TgtTypes) > 0 && !containsTypeID(wfSpec.TgtTypes, tgtNode.TypeID) {
+			return fmt.Errorf("operad: tgt type %q not in allowed list for %s: %v",
+				tgtNode.TypeID, env.RewriteCategory, wfSpec.TgtTypes)
+		}
+		return nil
 	}
 
-	// Rule 3: pair-level src_types/tgt_types enforcement. If the envelope
-	// matched a declared AdditionalPortPair rather than the WF's primary pair,
-	// and that pair declares its own non-empty SrcTypes/TgtTypes lists, those
-	// narrow the WF-level restriction and must also be satisfied. Primary-pair
-	// matches fall through — their types are already covered by rule 2.
-	if pair, ok := matchingAdditionalPair(wfSpec, env.SrcPort, env.TgtPort); ok {
-		if len(pair.SrcTypes) > 0 && !containsTypeID(pair.SrcTypes, srcNode.TypeID) {
-			return fmt.Errorf("operad: src type %q not allowed on pair (%s, %s) of %s: %v",
-				srcNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.SrcTypes)
-		}
-		// A tgt_types entry of "*" is a wildcard per the ontology convention
-		// (see WF19.pins-urn in ontology.json v3.12): any tgt type passes.
-		if len(pair.TgtTypes) > 0 && !containsTypeID(pair.TgtTypes, "*") &&
-			!containsTypeID(pair.TgtTypes, tgtNode.TypeID) {
-			return fmt.Errorf("operad: tgt type %q not allowed on pair (%s, %s) of %s: %v",
-				tgtNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.TgtTypes)
-		}
+	// Rule 3: pair-level src_types/tgt_types enforcement (additional-pair LINKs).
+	// A tgt_types entry of "*" is a wildcard per the ontology convention (see
+	// WF19.pins-urn in ontology.json v3.12): any tgt type passes.
+	if len(pair.SrcTypes) > 0 && !containsTypeID(pair.SrcTypes, srcNode.TypeID) {
+		return fmt.Errorf("operad: src type %q not allowed on pair (%s, %s) of %s: %v",
+			srcNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.SrcTypes)
+	}
+	if len(pair.TgtTypes) > 0 && !containsTypeID(pair.TgtTypes, "*") &&
+		!containsTypeID(pair.TgtTypes, tgtNode.TypeID) {
+		return fmt.Errorf("operad: tgt type %q not allowed on pair (%s, %s) of %s: %v",
+			tgtNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.TgtTypes)
 	}
 	return nil
 }
