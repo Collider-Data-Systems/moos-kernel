@@ -2,6 +2,7 @@
 /moos
 *.exe
 *.exe~
+*.exe.bak*
 *.out
 
 # Test artifacts

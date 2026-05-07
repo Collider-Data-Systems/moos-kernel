@@ -271,6 +271,12 @@ func buildStrataTestRegistry() *Registry {
 				SrcTypes: []graph.TypeID{"session"},
 				TgtTypes: []graph.TypeID{"*"}, // wildcard — any node type accepted
 			},
+			{
+				SrcPort:  "filtered-by",
+				TgtPort:  "filters-session",
+				SrcTypes: []graph.TypeID{"session"},
+				TgtTypes: []graph.TypeID{"view_filter"},
+			},
 		},
 		Authority: "kernel",
 		SyncMode:  "local-only",
@@ -280,17 +286,19 @@ func buildStrataTestRegistry() *Registry {
 	reg.NodeTypes["agent"] = NodeTypeSpec{ID: "agent", Stratum: "S2"}
 	reg.NodeTypes["program"] = NodeTypeSpec{ID: "program", Stratum: "S2"}
 	reg.NodeTypes["kernel"] = NodeTypeSpec{ID: "kernel", Stratum: "S2"}
+	reg.NodeTypes["view_filter"] = NodeTypeSpec{ID: "view_filter", Stratum: "S2"}
 	return reg
 }
 
 func stateForStrataTest() graph.GraphState {
 	return graph.GraphState{
 		Nodes: map[graph.URN]graph.Node{
-			"urn:moos:session:t": {URN: "urn:moos:session:t", TypeID: "session"},
-			"urn:moos:agent:t":   {URN: "urn:moos:agent:t", TypeID: "agent"},
-			"urn:moos:user:t":    {URN: "urn:moos:user:t", TypeID: "user"},
-			"urn:moos:program:t": {URN: "urn:moos:program:t", TypeID: "program"},
-			"urn:moos:kernel:t":  {URN: "urn:moos:kernel:t", TypeID: "kernel"},
+			"urn:moos:session:t":     {URN: "urn:moos:session:t", TypeID: "session"},
+			"urn:moos:agent:t":       {URN: "urn:moos:agent:t", TypeID: "agent"},
+			"urn:moos:user:t":        {URN: "urn:moos:user:t", TypeID: "user"},
+			"urn:moos:program:t":     {URN: "urn:moos:program:t", TypeID: "program"},
+			"urn:moos:kernel:t":      {URN: "urn:moos:kernel:t", TypeID: "kernel"},
+			"urn:moos:view_filter:t": {URN: "urn:moos:view_filter:t", TypeID: "view_filter"},
 		},
 		Relations: map[graph.URN]graph.Relation{},
 	}
@@ -421,6 +429,26 @@ func TestValidateStrataLink_AdditionalPair_WildcardOverridesNarrowWF(t *testing.
 	}
 	if err := reg.ValidateStrataLink(env, state); err != nil {
 		t.Errorf("pins-urn additional pair with [*] tgt_types should accept program even when WF-level excludes it; got: %v", err)
+	}
+}
+
+func TestValidateStrataLink_AdditionalPair_ViewFilterOverridesNarrowWF(t *testing.T) {
+	reg := buildStrataTestRegistry()
+	spec := reg.RewriteCategories[graph.WF19]
+	spec.TgtTypes = []graph.TypeID{"kernel", "session", "agent_session", "user", "agent"}
+	reg.RewriteCategories[graph.WF19] = spec
+	state := stateForStrataTest()
+
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:session:t",
+		SrcPort:         "filtered-by",
+		TgtURN:          "urn:moos:view_filter:t",
+		TgtPort:         "filters-session",
+	}
+	if err := reg.ValidateStrataLink(env, state); err != nil {
+		t.Errorf("filtered-by additional pair should accept view_filter even when WF-level excludes it; got: %v", err)
 	}
 }
 
