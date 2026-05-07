@@ -254,11 +254,11 @@ func isInfrastructureType(t graph.TypeID) bool {
 //     Allowlisted for kernel-actor and infrastructure-bootstrap paths
 //     per the precedence note above.
 var ontologyGovernedTypes = map[graph.TypeID]struct{}{
-	"system_instruction":  {},
-	"gate":                {},
-	"twin_link":           {},
-	"transport_binding":   {},
-	"kernel":              {},
+	"system_instruction": {},
+	"gate":               {},
+	"twin_link":          {},
+	"transport_binding":  {},
+	"kernel":             {},
 }
 
 // AdminScopeRewrite classifies whether an envelope touches admin-scope
@@ -348,30 +348,27 @@ func (r *Registry) AdminScopeRewrite(env graph.Envelope, state graph.GraphState)
 }
 
 // authorityScopeForField returns the AuthorityScope for a field on a node.
-// Prefers the live property record when it carries a non-empty scope
-// (reflects what actually landed); falls back to the registry type-spec
-// declaration for both additive MUTATE (field not yet on the node) AND
-// the case where the stored property has an empty AuthorityScope (e.g.
-// an older ADD that omitted the metadata).
+// Prefers the registry type-spec declaration because the loaded ontology is
+// the live authority contract. The stored property metadata is historical
+// provenance from the ADD/MUTATE that created the property; it may be stale
+// after an ontology authority correction. For unregistered fields, fall back
+// to the stored property record when it carries a non-empty scope.
 //
-// The empty-scope-falls-through pattern closes the Gemini security flag
-// on PR 31: trusting whatever's in state could let an ADD that forgot to
-// populate AuthorityScope bypass §M12 indefinitely. The registry
-// declaration is authoritative and should always be consulted when the
-// stored value is missing or blank.
+// This registry-first pattern keeps existing nodes governed by the current
+// operad even when their persisted Property.AuthorityScope was written by an
+// older ontology version.
 //
 // Returns "", false when the field is unknown to both sources.
 func authorityScopeForField(r *Registry, node graph.Node, field string) (string, bool) {
+	typeSpec, hasType := r.NodeTypes[node.TypeID]
+	if hasType {
+		pspec, hasPspec := typeSpec.Properties[field]
+		if hasPspec {
+			return pspec.AuthorityScope, true
+		}
+	}
 	if prop, ok := node.Properties[field]; ok && prop.AuthorityScope != "" {
 		return prop.AuthorityScope, true
 	}
-	typeSpec, hasType := r.NodeTypes[node.TypeID]
-	if !hasType {
-		return "", false
-	}
-	pspec, hasPspec := typeSpec.Properties[field]
-	if !hasPspec {
-		return "", false
-	}
-	return pspec.AuthorityScope, true
+	return "", false
 }

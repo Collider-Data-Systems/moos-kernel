@@ -240,8 +240,9 @@ func TestSystemInternalEnvelope_UserLINKNotAllowlisted(t *testing.T) {
 
 // adminScopeRegistry returns a Registry with the node-type specs PR 4
 // exercises: `program` (ordinary, owner-authority), `session` (kernel-
-// authority on context_urn + local_t), and the five ontology-governed
-// types whose touches are always admin-scope.
+// authority on context_urn + local_t), `external_op` (kernel-governed
+// lifecycle status), and the five ontology-governed types whose touches are
+// always admin-scope.
 func adminScopeRegistry() *Registry {
 	reg := EmptyRegistry()
 	reg.NodeTypes["program"] = NodeTypeSpec{
@@ -259,6 +260,14 @@ func adminScopeRegistry() *Registry {
 			"context_urn": {Mutability: "mutable", AuthorityScope: "kernel"},
 			"local_t":     {Mutability: "mutable", AuthorityScope: "kernel"},
 			"view_prefs":  {Mutability: "mutable", AuthorityScope: "owner"},
+		},
+	}
+	reg.NodeTypes["external_op"] = NodeTypeSpec{
+		ID: "external_op", Stratum: "S2",
+		Properties: map[string]PropertySpec{
+			"status":    {Mutability: "mutable", AuthorityScope: "kernel"},
+			"note":      {Mutability: "mutable", AuthorityScope: "owner"},
+			"owner_urn": {Mutability: "immutable", AuthorityScope: ""},
 		},
 	}
 	for _, t := range []graph.TypeID{"system_instruction", "gate", "twin_link", "transport_binding", "kernel"} {
@@ -388,6 +397,33 @@ func TestAdminScopeRewrite_MUTATEOwnerAuthorityField_NotAdminScope(t *testing.T)
 	}
 	if reg.AdminScopeRewrite(env, state) {
 		t.Errorf("MUTATE of owner-authority field should NOT be admin-scope")
+	}
+}
+
+func TestAdminScopeRewrite_MUTATEExternalOpStatus_RegistryOverridesStoredOwnerScope(t *testing.T) {
+	reg := adminScopeRegistry()
+	state := graph.GraphState{
+		Nodes: map[graph.URN]graph.Node{
+			"urn:moos:external_op:sam.oauth-writer": {
+				URN:    "urn:moos:external_op:sam.oauth-writer",
+				TypeID: "external_op",
+				Properties: map[string]graph.Property{
+					"owner_urn": {Value: "urn:moos:user:sam", Mutability: "immutable"},
+					"status":    {Value: "pending", Mutability: "mutable", AuthorityScope: "owner"},
+				},
+			},
+		},
+		Relations: map[graph.URN]graph.Relation{},
+	}
+	env := graph.Envelope{
+		RewriteType: graph.MUTATE,
+		Actor:       "urn:moos:agent:claude-code.hp-laptop",
+		TargetURN:   "urn:moos:external_op:sam.oauth-writer",
+		Field:       "status",
+		NewValue:    "done",
+	}
+	if !reg.AdminScopeRewrite(env, state) {
+		t.Errorf("external_op.status should be admin-scope via registry kernel authority even when stored property metadata is stale")
 	}
 }
 
