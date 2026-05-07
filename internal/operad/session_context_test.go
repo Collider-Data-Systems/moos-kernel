@@ -8,10 +8,11 @@ import (
 )
 
 // sessionContextFixture builds a state with:
-//   session:sam.a --has-occupant--> agent:claude
-//   session:sam.b --has-occupant--> agent:claude   (only present in multi-seat variant)
-//   session:sam.c (no occupant)
-//   user:sam, agent:other (stand-alone)
+//
+//	session:sam.a --has-occupant--> agent:claude
+//	session:sam.b --has-occupant--> agent:claude   (only present in multi-seat variant)
+//	session:sam.c (no occupant)
+//	user:sam, agent:other (stand-alone)
 func sessionContextFixture(multiSeat bool) graph.GraphState {
 	state := graph.GraphState{
 		Nodes: map[graph.URN]graph.Node{
