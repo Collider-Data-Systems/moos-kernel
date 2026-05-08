@@ -1,8 +1,10 @@
 # moos-kernel
 
-Ontology: `ffs0/kb/superset/ontology.json` (**v3.12.0** — 52 node types, 20 WFs / WF01–WF20)
+Ontology: `ffs0/kb/superset/ontology.json` (**v3.16.1** — 53 node types, 21 WFs / WF01–WF21)
 Canonical spec: `ffs0/kb/research/kernel/20260417-t187-kernel-proper.md` (M1-M20, live)
 Active implementation-spec docs (kb/research/session/): `20260419-t169-session-generalization.md` (5-facet tuple), `20260422-t172-cowork-as-occupant.md` (platform-host), `20260422-t172-wolframs-court-social-topology.md` (persona court)
+
+Current hp-laptop runtime (T=188): `ontology_version=3.16.1`, `t_day=188`, `log_len=1080`. Current ffs0 operator report: `kb/moos-diary/t188-t187-session-pipeline-mvp-report.md`. Runtime code was not changed by that projection lane, but kernel-side context matters for WF19 purpose, WF21 causality, and §M11/§M12 actor discipline.
 
 Archived references (retrieve from `ffs0/dev/reference/research-archive/` when needed): `20260408-foundation-t158.md` (original foundation paper), `20260414-t164-session-channel-purpose.md`, `20260418-t168-*.md` (S1/S0 substrate lingo, ontology audit), `20260420-t170-*.md` (functorial semantics spine, S0 materialization), per-round conversation summaries.
 
@@ -30,7 +32,7 @@ state(t) = fold(log[0..t]). Log is truth. State is derived.
 | node | object, element, vertex |
 | relation | binding, edge, wire, association |
 | rewrite | morphism, update, mutation |
-| rewrite_category (WF01–WF20) | named relation, UML association |
+| rewrite_category (WF01–WF21) | named relation, UML association |
 | property | field, payload, attribute |
 | operad | schema, grammar |
 | interaction_node | transition, event, message |
@@ -62,7 +64,7 @@ internal/graph      — pure types (no IO): Node, Relation, Property, Rewrite, E
                       URN, Stratum, RewriteCategory
 internal/fold       — pure catamorphism: Evaluate, Replay, EvaluateProgram
                       (maintains GraphState indexes on ADD/LINK/UNLINK)
-internal/operad     — type system: Registry (WF01–WF20) with Version field for /healthz,
+internal/operad     — type system: Registry (WF01–WF21) with Version field for /healthz,
                       AdditionalPortPairs per WF (consumed from ontology.json),
                       strict ValidateLINK (pair must be declared; pair-level src/tgt
                       type enforcement), ValidateMUTATE, session_context.go
@@ -159,7 +161,7 @@ Integration test gated behind `MOOS_INTEGRATION=1` (reads sibling `ffs0/kb/super
 | Actor | When | Gate behavior |
 |---|---|---|
 | `urn:moos:agent:<short>` | default for agent-driven work | §M11 inferred path (one session occupied); §M12 subject to superadmin if admin-scope |
-| `urn:moos:kernel:<ws>.<name>` | ontology-governed ADDs; kernel-authority MUTATEs on non-kernel nodes; WF19 opens-on | §M11 + §M12 allowlisted |
+| `urn:moos:kernel:<ws>.<name>` | ontology-governed ADDs; kernel-authority MUTATEs on non-kernel nodes; WF19 opens-on / has-purpose lifecycle wiring | §M11 + §M12 allowlisted |
 | `urn:moos:user:sam` | NOT for user-space envelopes | §M11 fails (owner, not occupant); only valid inside SeedIfAbsent bootstrap |
 
 Set `env.session_urn` explicitly only when the agent occupies multiple sessions.
