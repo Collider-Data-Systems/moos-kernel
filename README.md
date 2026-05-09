@@ -97,9 +97,9 @@ Twin kernels ride the same hypervisor host via `twin_link` edges and the WF16 ro
 
 ## Status
 
-Current hp-laptop runtime context at T189: ontology v3.16.1, `session:sam.governance` live, Calendar/time-fabric program family pinned into governance session scope, and the local ffs0 projection dashboard reporting `warn` with 12 pass, 2 warn, 0 fail.
+Current hp-laptop runtime context at T189: ontology v3.16.1, `session:sam.governance` live, Calendar/time-fabric and T189/T200 recommendation carriers pinned into governance session scope, 16 `calendar_event` observations present in HG, and the local ffs0 projection dashboard reporting `warn` with 18 pass, 1 warn, 0 fail.
 
-Near-term kernel work remains correctness-focused: keep the log/fold/operad/session/authority contract small and dependable while projection/ingest applications develop in `ffs0` and application-specific repos.
+Near-term kernel work remains correctness-focused: keep the log/fold/operad/session/authority contract small and dependable while projection/ingest applications develop in `ffs0` and application-specific repos. One visible T189 operad cleanup remains: align WF07's top-level declaration with the existing `anchors/anchor` port-color compatibility before Calendar source-anchor relations are applied.
 
 ## Repository layout
 

@@ -4,7 +4,7 @@ Ontology: `ffs0/kb/superset/ontology.json` (**v3.16.1** — 53 node types, 21 WF
 Canonical spec: `ffs0/kb/research/kernel/20260417-t187-kernel-proper.md` (M1-M20, live)
 Active implementation-spec docs (kb/research/session/): `20260419-t169-session-generalization.md` (5-facet tuple), `20260422-t172-cowork-as-occupant.md` (platform-host), `20260422-t172-wolframs-court-social-topology.md` (persona court)
 
-Current hp-laptop runtime (T=189): `ontology_version=3.16.1`, `t_day=189`, `log_len=1086`. Current ffs0 operator report: `kb/moos-diary/t189-calendar-dashboard-organization-wrapup.md`. Runtime code was not changed by the Calendar/dashboard projection lane, but kernel-side context matters for WF19 purpose/scope pins, WF21 causality, `calendar_event` G-ingest decisions, and §M11/§M12 actor discipline.
+Current hp-laptop runtime (T=189): `ontology_version=3.16.1`, `t_day=189`, `log_len=1154`. Current ffs0 operator report: `kb/moos-diary/t189-calendar-event-public-surface-wrapup.md`. Runtime code was not changed by the Calendar/dashboard/recommendation projection lane, but kernel-side context matters for WF19 purpose/scope pins, WF21 causality, applied `calendar_event` G-ingest observations, deferred WF07 source-anchor review, and §M11/§M12 actor discipline.
 
 Boundary note: this repo is the OS-facing runtime function program, not an application domain. Keep kernel changes focused on log/fold/operad/session/transport/authority correctness. Application groups such as `my-tiny-data-collider` run on the HG through kernels and may own websites, DNS, servers, Calendar/GitHub/Workspace surfaces, and projection plans in separate repos or ffs0 docs.
 
