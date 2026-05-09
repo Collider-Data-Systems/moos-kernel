@@ -2,6 +2,8 @@
 
 A categorical hypergraph rewriting kernel for distributed knowledge work. Go, stdlib-first.
 
+As of T189, this repository is the OS-facing runtime function program for mo:os. It is separate from application/domain groups such as `my-tiny-data-collider`, which run on the HG through kernels and may own websites, DNS, servers, Calendar/GitHub/Workspace surfaces, and public/private projection targets.
+
 ## What it is
 
 mo:os is a **semantic functorial network over distributed compute**, where all components — hardware and programs — are considered categorically. The hypergraph (HG) is the source of truth; state is derived from a log of four primitive rewrites:
@@ -15,7 +17,7 @@ UNLINK — remove a relation
 
 `state(t) = fold(log[0..t])`. The log is append-only; the kernel is a fold over it. Replay is prospective-only.
 
-The session is the centerpiece. A session is a 5-facet scoped context — `(scope, purpose) × (host, owner, occupant)` — where human and AI inference happens; its relations both make it findable (the G-direction adjunction observing surfaces like Drive, Gmail, Calendar, GitHub) and capable of writing the programs that pull the levers (the F-direction emitting envelopes through leaves). Leaves are whichever fluid structure surfaces values back to the session's open arguments.
+The session is the centerpiece. A session is a 5-facet scoped context: `(scope, purpose) x (host, owner, occupant)`. Its relations make it findable by G-direction ingest from surfaces like Drive, Gmail, Calendar, GitHub, websites, and DNS, and make it capable of writing programs that pull explicit actuator leaves in the F direction. Leaves are boundary actions with graph-derived arguments, not hidden side effects.
 
 ## What's in the box
 
@@ -23,7 +25,7 @@ The session is the centerpiece. A session is a 5-facet scoped context — `(scop
 |---|---|---|
 | `internal/graph` | pure types | `Node`, `Relation`, `Property`, `Rewrite`, `Envelope`, `GraphState` (with indexes), `URN`, `Stratum`, `RewriteCategory`. No IO. |
 | `internal/fold` | pure catamorphism | `Evaluate`, `Replay`, `EvaluateProgram`. Maintains state indexes on ADD/LINK/UNLINK. |
-| `internal/operad` | type system | `Registry` (ontology v3.13.0: 52 node types; WFs WF01–WF20 promoted, WF21 proposed in v3.14 candidate set; current typed `RewriteCategory` constants in `internal/graph` run through WF19), strict port-pair `ValidateLINK`, `ValidateMUTATE`, occupancy resolution, admin-capability walks. |
+| `internal/operad` | type system | `Registry` (current ontology v3.16.1: 53 node types; WFs WF01–WF21), strict port-pair `ValidateLINK`, `ValidateMUTATE`, occupancy resolution, session-context resolution, admin-capability walks. |
 | `internal/kernel` | effect layer | `Runtime`, `Store`, `LogStore`/`MemStore`. §M11 session-liveness + §M12 admin-capability gates. Sweep loop emits WF13 governance proposals on `t_hook.firing_state` transitions. |
 | `internal/reactive` | predicate evaluator | Watch / React / Guard engine; `EvaluateThookPredicate` covers 10+ §M14 predicate kinds. |
 | `internal/transport` | HTTP + SSE | `/state/*` (e.g. `/state/nodes`, `/state/relations`), `/log`, `/rewrites`, `/programs`, `/operad/*` (e.g. `/operad/node-types`), `/hdc/*`, `/t-hook/evaluate`, `/t-cone`, `/twin/ingest`, `/fold` (with SSE), `/healthz`. |
@@ -47,7 +49,7 @@ Key flags:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--ontology` | (none) | path to `ontology.json`; without it, ontology-backed type validation is disabled (the runtime falls back to an empty registry); §M11 + §M12 gates still run |
+| `--ontology` | (none) | path to `ontology.json`; without it, ontology-backed type validation is disabled and liveness/admin gates are bypassed because there is no registry-backed operad |
 | `--log` | (none) | JSONL log path; in-memory if omitted |
 | `--listen` | `:8000` | HTTP transport |
 | `--mcp-addr` | `:8080` | MCP SSE |
@@ -77,11 +79,17 @@ Fold-time replay does **not** re-check liveness — pre-gate persisted logs rebu
 
 ## Ontology
 
-[`ffs0/kb/superset/ontology.json`](https://github.com/Collider-Data-Systems/ffs0) (private workspace) — v3.13.0 — 52 node types, WFs WF01–WF21. Loaded at boot; immutable thereafter.
+[`ffs0/kb/superset/ontology.json`](https://github.com/Collider-Data-Systems/ffs0) (private workspace) — v3.16.1 — 53 node types, WFs WF01–WF21. Loaded at boot; immutable thereafter.
 
-Selected node types: `session`, `program`, `purpose`, `agent`, `kernel`, `channel`, `knowledge_item`, `claim`, `t_hook`, `reactor`, `watcher`, `tool_call`, `tool_result`, `external_op`, `compute`, `storage`, `harness`, `workflow`, `group`, `role`, `gate`, `system_instruction`, `transport_binding`, `twin_link`, `governance_proposal`, `grammar_fragment`.
+Selected node types: `session`, `program`, `purpose`, `agent`, `kernel`, `channel`, `knowledge_item`, `claim`, `derivation`, `calendar_event`, `clock`, `t_hook`, `reactor`, `watcher`, `tool_call`, `tool_result`, `external_op`, `compute`, `storage`, `harness`, `workflow`, `group`, `role`, `gate`, `system_instruction`, `transport_binding`, `twin_link`, `governance_proposal`, `grammar_fragment`.
 
-WF categories include WF01 owns/owned-by, WF02 governs/delegates-to, WF12 provides-kb/kb-source, WF13 governance-proposes/proposed-by, WF18 scheduled-after/scheduled-before, WF19 opens-on/has-occupant + occupied-by/is-occupant-of, WF20 ceremony promotion.
+WF categories include WF01 owns/owned-by, WF02 governs/delegates-to, WF12 provides-kb/kb-source, WF13 governance-proposes/proposed-by, WF18 composition/dependency/scheduling pairs, WF19 opens-on/has-occupant/has-purpose/pins-urn/filtering/tool-mount pairs, WF20 grammar-promotion ceremony, and WF21 causes/caused-by.
+
+## Kernel, Host OS, And Applications
+
+The kernel's job is runtime substrate: log/fold, operad validation, session liveness, admin capability, transport, HDC derivation, and explicit actuator boundaries. Longer-term OS integration may include a Rust host extension on Linux/Windows for local watchers, credentials, policy, and user-approved data channels. That host extension should still be substrate/runtime code, separate from application code.
+
+Applications are HG groups/program families that use the runtime. `my-tiny-data-collider` is one such application/domain: websites, DNS, content/data servers, Calendar, GitHub, Workspace, and other projection surfaces can belong to that group without becoming part of `moos-kernel`.
 
 ## Federation
 
@@ -89,9 +97,9 @@ Twin kernels ride the same hypervisor host via `twin_link` edges and the WF16 ro
 
 ## Status
 
-Round-11 closed at T=174 (April 24, 2026, just past midnight CEST). Round-12 active (T=175): five v3.14 grammar_fragment proposals expanding the ontology with `derivation` (reify session inference), `clock` (generalized time fabric — `t_hook` becomes a special case), WF21 `causes/caused-by` (causation distinct from succession), `substrate` property (where node-truth lives), and leaf-firing-state semantics.
+Current hp-laptop runtime context at T189: ontology v3.16.1, `session:sam.governance` live, Calendar/time-fabric program family pinned into governance session scope, and the local ffs0 projection dashboard reporting `warn` with 12 pass, 2 warn, 0 fail.
 
-MVP target: T=190 (May 10, 2026) — six gates (G1–G6) toward `purpose:sam.mvp-sovereign-knowledge-os`.
+Near-term kernel work remains correctness-focused: keep the log/fold/operad/session/authority contract small and dependable while projection/ingest applications develop in `ffs0` and application-specific repos.
 
 ## Repository layout
 
@@ -103,8 +111,9 @@ go.mod            # stdlib + quic-go only
 
 ## Companion repositories
 
-- **moos-router** — WF16 federation gateway; URN-prefix shard routing
-- **ffs0** — private workspace + doctrine notes + skill library + ontology source-of-truth
+- **moos-router** — WF16 federation gateway; URN-prefix and type routing across kernels.
+- **ffs0** — private workspace, ontology source, skills, projection planners, reports, and operator dashboards.
+- **Application groups** — e.g. `my-tiny-data-collider`, modeled as HG group/purpose/program/channel families, not as kernel code.
 
 ## License
 
