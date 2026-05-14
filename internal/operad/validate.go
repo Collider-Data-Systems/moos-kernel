@@ -302,7 +302,7 @@ func containsString(list []string, s string) bool {
 //     node types must additionally satisfy the pair-level restriction. The
 //     ontology uses this to narrow an extension pair below the WF's overall
 //     src/tgt lists — e.g. WF19's has-occupant pair restricts to session→
-//     (user|agent) even though WF19 itself accepts session|agent|agent_session
+//     (user|agent|group) even though WF19 itself accepts session|agent|agent_session
 //     as sources and a broader tgt_types list. (T=171 round 11 PR 1.)
 func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState) error {
 	srcNode, srcOk := state.Nodes[env.SrcURN]

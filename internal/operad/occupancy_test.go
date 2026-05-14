@@ -80,6 +80,32 @@ func TestResolveSessionOccupant_Hit(t *testing.T) {
 	}
 }
 
+func TestResolveSessionOccupant_GroupPrincipal(t *testing.T) {
+	state := stateWithOccupancy()
+	state.Nodes["urn:moos:group:sam"] = graph.Node{
+		URN:    "urn:moos:group:sam",
+		TypeID: "group",
+		Properties: map[string]graph.Property{
+			"name": {Value: "sam", Mutability: "immutable"},
+		},
+	}
+	state.Relations["urn:moos:rel:sam.idle.has-occupant.group-sam"] = graph.Relation{
+		URN:             "urn:moos:rel:sam.idle.has-occupant.group-sam",
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:session:sam.idle",
+		SrcPort:         "has-occupant",
+		TgtURN:          "urn:moos:group:sam",
+		TgtPort:         "is-occupant-of",
+	}
+	occ, ok := ResolveSessionOccupant(state, "urn:moos:session:sam.idle")
+	if !ok {
+		t.Fatalf("expected group occupant to resolve after v3.13 principal widening")
+	}
+	if occ != "urn:moos:group:sam" {
+		t.Errorf("expected occupant=urn:moos:group:sam, got %s", occ)
+	}
+}
+
 func TestResolveSessionOccupant_MissRelation(t *testing.T) {
 	state := stateWithOccupancy()
 	occ, ok := ResolveSessionOccupant(state, "urn:moos:session:sam.idle")
@@ -136,6 +162,46 @@ func TestCheckAdminCapability_UserActor(t *testing.T) {
 	// Actor is a user directly — still walks WF02.
 	if !CheckAdminCapability(state, "urn:moos:user:sam") {
 		t.Errorf("expected user with superadmin WF02 to pass admin check")
+	}
+}
+
+func TestCheckAdminCapability_GroupActor(t *testing.T) {
+	state := stateWithAdminChain()
+	state.Nodes["urn:moos:group:sam"] = graph.Node{URN: "urn:moos:group:sam", TypeID: "group"}
+	state.Relations["urn:moos:rel:group.sam.governs.superadmin"] = graph.Relation{
+		URN:             "urn:moos:rel:group.sam.governs.superadmin",
+		RewriteCategory: graph.WF02,
+		SrcURN:          "urn:moos:group:sam",
+		SrcPort:         "governs",
+		TgtURN:          "urn:moos:role:superadmin",
+		TgtPort:         "governed-by",
+	}
+	if !CheckAdminCapability(state, "urn:moos:group:sam") {
+		t.Errorf("expected group with superadmin WF02 to pass admin check")
+	}
+}
+
+func TestCheckAdminCapability_GroupSessionOccupant(t *testing.T) {
+	state := stateWithAdminChain()
+	state.Nodes["urn:moos:group:sam"] = graph.Node{URN: "urn:moos:group:sam", TypeID: "group"}
+	state.Relations["urn:moos:rel:group.sam.governs.superadmin"] = graph.Relation{
+		URN:             "urn:moos:rel:group.sam.governs.superadmin",
+		RewriteCategory: graph.WF02,
+		SrcURN:          "urn:moos:group:sam",
+		SrcPort:         "governs",
+		TgtURN:          "urn:moos:role:superadmin",
+		TgtPort:         "governed-by",
+	}
+	state.Relations["urn:moos:rel:sam.hp-laptop.has-occupant.user-sam"] = graph.Relation{
+		URN:             "urn:moos:rel:sam.hp-laptop.has-occupant.user-sam",
+		RewriteCategory: graph.WF19,
+		SrcURN:          "urn:moos:session:sam.hp-laptop",
+		SrcPort:         "has-occupant",
+		TgtURN:          "urn:moos:group:sam",
+		TgtPort:         "is-occupant-of",
+	}
+	if !CheckAdminCapability(state, "urn:moos:session:sam.hp-laptop") {
+		t.Errorf("expected session occupied by superadmin group to pass admin check")
 	}
 }
 
@@ -205,7 +271,7 @@ func TestResolveSessionOccupant_RequiresBothPorts(t *testing.T) {
 }
 
 // TestResolveSessionOccupant_RejectsNonPrincipalTarget — the target of
-// has-occupant must be a user or agent. Any other type_id fails closed.
+// has-occupant must be a user, agent, or group. Any other type_id fails closed.
 func TestResolveSessionOccupant_RejectsNonPrincipalTarget(t *testing.T) {
 	state := stateWithOccupancy()
 	// Retarget has-occupant at a type_id that isn't user/agent.
@@ -223,7 +289,7 @@ func TestResolveSessionOccupant_RejectsNonPrincipalTarget(t *testing.T) {
 	}
 	_, ok := ResolveSessionOccupant(state, "urn:moos:session:sam.idle")
 	if ok {
-		t.Errorf("expected ResolveSessionOccupant to reject program-typed target (not a user|agent)")
+		t.Errorf("expected ResolveSessionOccupant to reject program-typed target (not a user|agent|group)")
 	}
 }
 
@@ -268,7 +334,7 @@ func TestCheckAdminCapability_RequiresGovernedByTgtPort(t *testing.T) {
 
 // TestCheckAdminCapability_RejectsNonPrincipalActor — if the actor URN
 // points at a node that's neither session nor a recognised principal
-// (user|agent), the check fails closed.
+// (user|agent|group), the check fails closed.
 func TestCheckAdminCapability_RejectsNonPrincipalActor(t *testing.T) {
 	state := stateWithAdminChain()
 	// Add a governance_proposal node and point the WF02 relation at it.

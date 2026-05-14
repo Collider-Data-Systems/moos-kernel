@@ -16,13 +16,13 @@ import (
 //
 // §M19 relation shape (v3.10 ontology):
 //
-//	session --has-occupant (ColorWorkflow)--> user | agent
+//	session --has-occupant (ColorWorkflow)--> user | agent | group
 //	        <--is-occupant-of--
 //
 // §M12 admin chain:
 //
-//	actor (session OR user OR agent)
-//	  -- (if session) has-occupant --> principal (user | agent)
+//	actor (session OR user OR agent OR group)
+//	  -- (if session) has-occupant --> principal (user | agent | group)
 //	  -- WF02 governs --> role:superadmin
 //
 // Superadmin role is identified strictly by URN equality against
@@ -50,17 +50,18 @@ const (
 var principalTypes = map[graph.TypeID]struct{}{
 	"user":  {},
 	"agent": {},
+	"group": {},
 }
 
 // ResolveSessionOccupant walks the WF19 has-occupant relation outbound from
-// a session node and returns the principal URN (user or agent) it points at.
+// a session node and returns the principal URN (user, agent, or group) it points at.
 //
 // Returns (urn, true) on success; (zero, false) if:
 //   - the session URN is empty or the node is missing
 //   - the node exists but is not a type_id=="session"
 //   - the session has no well-formed has-occupant relation (unoccupied)
 //   - the target of has-occupant is missing from state
-//   - the target's type_id is not a recognised principal (user | agent)
+//   - the target's type_id is not a recognised principal (user | agent | group)
 //
 // Pure function — no locking. Caller passes a state snapshot.
 //
@@ -103,7 +104,7 @@ func ResolveSessionOccupant(state graph.GraphState, sessionURN graph.URN) (graph
 		if !ok {
 			continue // stale LINK; skip
 		}
-		// Tighten: only user / agent are valid principals per WF19 v3.10.
+		// Tighten: only declared principal node types are valid here.
 		if _, isPrincipal := principalTypes[tgt.TypeID]; !isPrincipal {
 			continue
 		}
@@ -156,7 +157,7 @@ func CheckAdminCapability(state graph.GraphState, actor graph.URN) bool {
 	}
 
 	// Resolve the principal. If actor is a session, hop through has-occupant;
-	// otherwise the actor IS the principal and must be user|agent.
+	// otherwise the actor IS the principal and must be user|agent|group.
 	principal := actor
 	principalNode := actorNode
 	if actorNode.TypeID == "session" {
@@ -248,7 +249,7 @@ type RotateOccupantResult struct {
 //   - actor empty (fold.validateEnvelopeStructure would reject the emitted
 //     envelopes with ErrMissingActor; fail early here for a clearer error)
 //   - session node missing from state OR not of type_id == "session"
-//   - newOccupantURN not of a principal type (user | agent)
+//   - newOccupantURN not of a principal type (user | agent | group)
 //   - current occupant equals newOccupantURN (no-op rotation rejected to
 //     surface programmer bugs; callers who want idempotence check first)
 //   - session has MORE THAN ONE has-occupant relation (doctrine violation;
@@ -305,7 +306,7 @@ func RotateSessionOccupant(
 		return zero, rotateErr("new occupant node not found: %s", newOccupantURN)
 	}
 	if _, isPrincipal := principalTypes[newOccupantNode.TypeID]; !isPrincipal {
-		return zero, rotateErr("new occupant %s has type_id=%s, must be user|agent",
+		return zero, rotateErr("new occupant %s has type_id=%s, must be user|agent|group",
 			newOccupantURN, newOccupantNode.TypeID)
 	}
 

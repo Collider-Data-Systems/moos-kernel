@@ -173,7 +173,7 @@ func TestRotateSessionOccupant_SessionURNNotASession(t *testing.T) {
 
 func TestRotateSessionOccupant_NewOccupantNotPrincipal(t *testing.T) {
 	state := stateForRotation()
-	// Add a non-principal node (kernel is not user|agent).
+	// Add a non-principal node (kernel is not user|agent|group).
 	state.Nodes["urn:moos:kernel:hp-z440.primary"] = graph.Node{
 		URN:    "urn:moos:kernel:hp-z440.primary",
 		TypeID: "kernel",
@@ -188,7 +188,7 @@ func TestRotateSessionOccupant_NewOccupantNotPrincipal(t *testing.T) {
 		"actor",
 		"urn:moos:rel:x",
 	)
-	if err == nil || !strings.Contains(err.Error(), "must be user|agent") {
+	if err == nil || !strings.Contains(err.Error(), "must be user|agent|group") {
 		t.Fatalf("expected principal-type rejection; got %v", err)
 	}
 }

@@ -64,7 +64,7 @@ const (
 //  1. If env.Actor is a node of type "session", the actor IS the session;
 //     return ResolveSessionActorIsSession with SessionURN == env.Actor —
 //     but ONLY if that session itself has a canonical has-occupant relation
-//     pointing at a principal (user or agent). An unoccupied session as
+//     pointing at a principal (user, agent, or group). An unoccupied session as
 //     actor is not §M11-compliant: there is no seated principal to gate
 //     against, so the resolver returns ResolveSessionAbsent rather than
 //     silently passing. This mirrors CheckAdminCapability's hop-through-
@@ -116,7 +116,7 @@ func ResolveSessionForEnvelope(state graph.GraphState, env graph.Envelope) Resol
 
 // sessionHasAnyOccupant returns true when sessionURN has at least one
 // canonical (has-occupant, is-occupant-of) relation whose target is a
-// recognised principal (user or agent). Mirrors ResolveSessionOccupant
+// recognised principal (user, agent, or group). Mirrors ResolveSessionOccupant
 // but without caring which principal — just that one exists. Used by
 // case 1 of ResolveSessionForEnvelope to block unoccupied-session-as-
 // actor bypass.
