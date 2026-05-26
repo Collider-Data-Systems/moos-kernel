@@ -161,4 +161,25 @@ func TestLoadRegistry_LoadsRealOntology_WF19Pairs(t *testing.T) {
 	if !found {
 		t.Error("has-occupant/is-occupant-of pair missing from real ontology WF19")
 	}
+
+	wf07, ok := reg.RewriteCategories[graph.WF07]
+	if !ok {
+		t.Fatal("WF07 missing from real ontology registry")
+	}
+	foundAnchor := false
+	for _, p := range wf07.AdditionalPortPairs {
+		if p.SrcPort == "anchors" && p.TgtPort == "anchor" {
+			foundAnchor = true
+			if len(p.SrcTypes) != 1 || p.SrcTypes[0] != "calendar_event" {
+				t.Errorf("WF07 anchors/anchor src_types = %v, want [calendar_event]", p.SrcTypes)
+			}
+			if len(p.TgtTypes) != 1 || p.TgtTypes[0] != "*" {
+				t.Errorf("WF07 anchors/anchor tgt_types = %v, want [*]", p.TgtTypes)
+			}
+			break
+		}
+	}
+	if !foundAnchor {
+		t.Error("anchors/anchor pair missing from real ontology WF07")
+	}
 }

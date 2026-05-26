@@ -43,6 +43,25 @@ func buildTestRegistry() *Registry {
 		SyncMode:  "local-only",
 	}
 
+	reg.RewriteCategories[graph.WF07] = RewriteCategorySpec{
+		ID:              graph.WF07,
+		Name:            "Workflow lifecycle",
+		AllowedRewrites: []graph.RewriteType{graph.LINK, graph.UNLINK, graph.MUTATE},
+		SrcPort:         "participates",
+		TgtPort:         "participated-by",
+		AdditionalPortPairs: []AdditionalPortPair{
+			{
+				SrcPort:        "anchors",
+				TgtPort:        "anchor",
+				SrcTypes:       []graph.TypeID{"calendar_event"},
+				TgtTypes:       []graph.TypeID{"*"},
+				AddedInVersion: "3.16.2",
+			},
+		},
+		Authority: "principal or delegate",
+		SyncMode:  "eventual",
+	}
+
 	// WF99 simulating a degenerate / spec-absent WF — no primary, no additional.
 	// ValidateLINK should remain permissive in that case for backward compat.
 	reg.RewriteCategories["WF99"] = RewriteCategorySpec{
@@ -103,6 +122,21 @@ func TestValidateLINK_AdditionalPairAccepted_PinsURN(t *testing.T) {
 	}
 	if err := reg.ValidateLINK(env); err != nil {
 		t.Fatalf("pins-urn pair rejected: %v", err)
+	}
+}
+
+func TestValidateLINK_AdditionalPairAccepted_WF07Anchors(t *testing.T) {
+	reg := buildTestRegistry()
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF07,
+		SrcPort:         "anchors",
+		TgtPort:         "anchor",
+		SrcURN:          "urn:moos:cal:2026-05-26.demo",
+		TgtURN:          "urn:moos:claim:source",
+	}
+	if err := reg.ValidateLINK(env); err != nil {
+		t.Fatalf("WF07 anchors/anchor pair rejected: %v", err)
 	}
 }
 
