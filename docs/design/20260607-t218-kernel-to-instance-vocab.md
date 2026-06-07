@@ -10,7 +10,7 @@
 
 ## Why this branch exists
 
-Per T218 branching doctrine, runtime work in `moos-kernel` always lands on `feat/<purpose-slug>`, keyed
+Per T=218 branching doctrine, runtime work in `moos-kernel` always lands on `feat/<purpose-slug>`, keyed
 to a feature session, and merges to `master` only when the build gate passes. This lane tracks the
 `kernel → instance` rename so it converges as one reviewed unit instead of leaking across trunk commits.
 
@@ -31,8 +31,9 @@ rewrite set (ADD/LINK/MUTATE/UNLINK) are unchanged.
 - **Alias-first.** The runtime must accept both `kernel` and `instance` forms simultaneously across the
   transition so federation/readback and the router never break mid-migration. URN form stays readable as
   `urn:moos:kernel:<ws>.<name>` until a reviewed URN migration ships.
-- **Build gate = apply gate (T218).** No rename merges to `master` until `Doctor` + `go test ./...` pass
+- **Build gate = apply gate (T=218).** No rename merges to `master` until the Doctor check (the ffs0
+  `dev/scripts/ops/Test-MoosFederation.ps1 -Mode Doctor` federation health gate) + `go test ./...` pass
   on this branch.
-- **Boundary.** This branch carries data (this note). Its existence emits no HG rewrite, no deploy, no
-  rename. It is S0 substrate until reviewed and merged with a provenance trailer:
+- **Boundary.** This branch carries data (this note). Its existence emits no hypergraph (HG) rewrite, no
+  deploy, no rename. It is S0 substrate until reviewed and merged with a provenance trailer:
   `authored-by: agent:vscode.hp-z440.primary / session:sam.z440-vscode-projection-lead / manifold-instances-vocab`.
