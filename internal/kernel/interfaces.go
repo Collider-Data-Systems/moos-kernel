@@ -14,6 +14,7 @@ type InspectKernel interface {
 	Log() []graph.PersistedRewrite
 	LogLen() int
 	LogStats() (logLen int, maxLogSeq int64)
+	LogSeqMissing() int
 }
 
 // WriteKernel provides write access to the kernel.

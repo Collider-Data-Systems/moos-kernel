@@ -142,6 +142,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		"status":           "ok",
 		"log_len":          logLen,
 		"max_log_seq":      maxLogSeq,
+		"log_seq_missing":  s.inspect.LogSeqMissing(),
 		"t_day":            currentTDay(),
 		"ontology_version": ontologyVersion,
 	})

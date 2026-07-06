@@ -92,3 +92,65 @@ func TestNewRuntimeSeedsCounterFromMaxSeq(t *testing.T) {
 		t.Fatalf("persisted tail LogSeq = %d, want 4", got)
 	}
 }
+
+// preSeqEntry builds an entry as persisted before the log_seq field existed
+// (early-2026 seed lines): LogSeq deserializes to the zero value.
+func preSeqEntry(urn string, at time.Time) graph.PersistedRewrite {
+	e := addEntry(0, urn, at)
+	return e
+}
+
+// TestNewRuntimePreSeqEraEntriesAreNotDuplicates — moos-kernel#45: the Z440
+// twin logs open with seed lines that predate the log_seq field entirely.
+// They deserialize to LogSeq 0 and must be counted as pre-seq legacy, not as
+// duplicate seq values; the counter must still seed from the real max, and
+// the drift arithmetic log_len - LogSeqMissing() == max_log_seq must hold.
+func TestNewRuntimePreSeqEraEntriesAreNotDuplicates(t *testing.T) {
+	now := time.Now().UTC()
+	store := NewMemStore()
+	// The twin shape: 3 pre-seq seed lines, then a clean seq run 1..10.
+	entries := []graph.PersistedRewrite{
+		preSeqEntry("urn:moos:ki:legacy-a", now),
+		preSeqEntry("urn:moos:ki:legacy-b", now),
+		preSeqEntry("urn:moos:ki:legacy-c", now),
+	}
+	for i := int64(1); i <= 10; i++ {
+		entries = append(entries, addEntry(i, "urn:moos:ki:real-"+string(rune('a'+i-1)), now.Add(time.Duration(i)*time.Second)))
+	}
+	if err := store.Append(entries); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	rt, err := NewRuntime(store, nil)
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	if got := rt.LogSeqMissing(); got != 3 {
+		t.Fatalf("LogSeqMissing = %d, want 3", got)
+	}
+	logLen, maxSeq := rt.LogStats()
+	if logLen != 13 || maxSeq != 10 {
+		t.Fatalf("LogStats = (%d, %d), want (13, 10)", logLen, maxSeq)
+	}
+	// The clean-log invariant with legacy entries subtracted.
+	if int64(logLen-rt.LogSeqMissing()) != maxSeq {
+		t.Fatalf("log_len - log_seq_missing = %d, want max_log_seq %d", logLen-rt.LogSeqMissing(), maxSeq)
+	}
+
+	// Next apply stamps 11 — pre-seq entries never influence the counter.
+	if _, err := rt.Apply(graph.Envelope{
+		RewriteType: graph.ADD,
+		Actor:       "urn:moos:kernel",
+		NodeURN:     "urn:moos:ki:real-next",
+		TypeID:      "knowledge_item",
+		Properties: map[string]graph.Property{
+			"title": {Value: "next", Mutability: "immutable"},
+		},
+	}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got := rt.MaxLogSeq(); got != 11 {
+		t.Fatalf("MaxLogSeq after apply = %d, want 11", got)
+	}
+}
