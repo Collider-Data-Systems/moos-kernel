@@ -88,14 +88,20 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 	// the moos-kernel#45 false positive. Track them separately so /healthz
 	// consumers can subtract them from log_len before drift classification.
 	var maxSeq int64
-	var preSeq int // entries persisted before the log_seq field existed
+	var preSeq int   // entries persisted before the log_seq field existed
+	var zeroTail int // zero-seq entries AFTER the first real seq — anomalous, not legacy
+	sawReal := false // legacy seed lines only ever exist as a leading prefix
 	seen := make(map[int64]int, len(entries))
 	var dupSeqs []int64 // distinct real seq values that appear more than once
 	for _, e := range entries {
 		if e.LogSeq == 0 {
 			preSeq++
+			if sawReal {
+				zeroTail++
+			}
 			continue
 		}
+		sawReal = true
 		if e.LogSeq > maxSeq {
 			maxSeq = e.LogSeq
 		}
@@ -115,9 +121,17 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 		log.Printf("kernel: log integrity warning: %d log_seq values appear more than once (%d excess entries, e.g. %v) — multi-writer artifact, see moos-kernel#40; log_len=%d max_log_seq=%d",
 			len(dupSeqs), excess, sample, len(entries), maxSeq)
 	}
-	if preSeq > 0 {
+	if zeroTail > 0 {
+		// A missing seq after real seqs began is corruption / a partial write /
+		// a manual edit — never a legacy seed line. Still counted in
+		// preSeqEntries so the healthz arithmetic stays honest, but loudly
+		// flagged instead of silently classified benign (Copilot catch on #46).
+		log.Printf("kernel: log integrity warning: %d entry(ies) missing log_seq AFTER real seqs began — not legacy seed lines; inspect the jsonl (moos-kernel#45); log_len=%d max_log_seq=%d",
+			zeroTail, len(entries), maxSeq)
+	}
+	if preSeq-zeroTail > 0 {
 		log.Printf("kernel: replayed %d pre-log_seq-era entries (no seq field; legacy seed lines) — benign, see moos-kernel#45; log_len=%d max_log_seq=%d",
-			preSeq, len(entries), maxSeq)
+			preSeq-zeroTail, len(entries), maxSeq)
 	}
 	rt.hdcIndex.Recompute(state, nil)
 	return rt, nil

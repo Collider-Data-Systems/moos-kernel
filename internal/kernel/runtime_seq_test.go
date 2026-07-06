@@ -154,3 +154,33 @@ func TestNewRuntimePreSeqEraEntriesAreNotDuplicates(t *testing.T) {
 		t.Fatalf("MaxLogSeq after apply = %d, want 11", got)
 	}
 }
+
+// TestNewRuntimeZeroSeqAfterRealSeqsIsFlagged — Copilot catch on #46: a
+// zero-seq entry appearing AFTER real seqs began is corruption or a partial
+// write, never a legacy seed line. It still counts in LogSeqMissing (the
+// healthz arithmetic stays honest) but must not be silently benign.
+func TestNewRuntimeZeroSeqAfterRealSeqsIsFlagged(t *testing.T) {
+	now := time.Now().UTC()
+	store := NewMemStore()
+	entries := []graph.PersistedRewrite{
+		preSeqEntry("urn:moos:ki:legacy-a", now), // leading prefix: legacy
+		addEntry(1, "urn:moos:ki:real-a", now),
+		addEntry(2, "urn:moos:ki:real-b", now),
+		preSeqEntry("urn:moos:ki:anomaly", now.Add(time.Minute)), // tail zero: anomalous
+	}
+	if err := store.Append(entries); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	rt, err := NewRuntime(store, nil)
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	// Both zero-seq entries count toward the healthz subtraction…
+	if got := rt.LogSeqMissing(); got != 2 {
+		t.Fatalf("LogSeqMissing = %d, want 2", got)
+	}
+	// …and the counter still seeds from the real max.
+	if got := rt.MaxLogSeq(); got != 2 {
+		t.Fatalf("MaxLogSeq = %d, want 2", got)
+	}
+}
