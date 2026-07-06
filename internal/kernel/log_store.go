@@ -14,13 +14,44 @@ const maxLogLineBytes = 10 * 1024 * 1024 // 10 MB max per log line
 
 // LogStore is a JSONL (newline-delimited JSON) append-only Store.
 // Each line is one PersistedRewrite. The file is opened in O_APPEND mode.
-// Safe for single-process use; not intended for multi-process sharing.
+//
+// Multi-process sharing is enforced against: NewLogStore takes an exclusive
+// single-writer lock (a <path>.lock sidecar held for the store's lifetime),
+// because two kernels replaying the same file hold independent logSeq
+// counters and stale folds — they stamp duplicate log_seq values and pass
+// gates against state that never saw the other's writes (moos-kernel#40).
 type LogStore struct {
 	mu   sync.Mutex
 	path string
+	lock *os.File // single-writer lock handle; nil when opened shared
 }
 
+// NewLogStore opens the JSONL store and takes the single-writer lock.
+// A second store on the same path — in this process or any other — fails
+// fast instead of interleaving. Release with Close.
 func NewLogStore(path string) (*LogStore, error) {
+	lock, err := acquireLogLock(path)
+	if err != nil {
+		return nil, err
+	}
+	ls, err := newLogStoreUnlocked(path)
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	ls.lock = lock
+	return ls, nil
+}
+
+// NewSharedLogStore opens the store WITHOUT the single-writer lock. Unsafe:
+// concurrent writers interleave duplicate log_seq values and apply against
+// stale folds (moos-kernel#40). Exists only as the --allow-shared-log
+// emergency escape hatch.
+func NewSharedLogStore(path string) (*LogStore, error) {
+	return newLogStoreUnlocked(path)
+}
+
+func newLogStoreUnlocked(path string) (*LogStore, error) {
 	// Create or verify the file is writable
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -28,6 +59,19 @@ func NewLogStore(path string) (*LogStore, error) {
 	}
 	f.Close()
 	return &LogStore{path: path}, nil
+}
+
+// Close releases the single-writer lock. The store must not be used after.
+// No-op for stores opened via NewSharedLogStore.
+func (l *LogStore) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lock == nil {
+		return nil
+	}
+	err := l.lock.Close()
+	l.lock = nil
+	return err
 }
 
 func (l *LogStore) Append(entries []graph.PersistedRewrite) error {

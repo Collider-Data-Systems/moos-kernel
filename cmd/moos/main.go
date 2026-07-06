@@ -23,6 +23,8 @@ import (
 func main() {
 	ontologyPath := flag.String("ontology", "", "path to ontology.json (ffs0/kb/superset/ontology.json)")
 	logPath := flag.String("log", "", "path to JSONL rewrite log (empty = in-memory)")
+	allowSharedLog := flag.Bool("allow-shared-log", false,
+		"UNSAFE: skip the single-writer lock on --log. Concurrent writers interleave duplicate log_seq values and apply against stale folds (moos-kernel#40). Emergency recovery only.")
 	listenAddr := flag.String("listen", ":8000", "HTTP transport listen address")
 	mcpAddr := flag.String("mcp-addr", ":8080", "MCP server listen address")
 	mcpStdio := flag.Bool("mcp-stdio", false, "also run MCP on stdin/stdout")
@@ -52,12 +54,23 @@ func main() {
 	// --- Open store ---
 	var store kernel.Store
 	if *logPath != "" {
-		ls, err := kernel.NewLogStore(*logPath)
-		if err != nil {
-			log.Fatalf("store: %v", err)
+		var ls *kernel.LogStore
+		var lsErr error
+		if *allowSharedLog {
+			ls, lsErr = kernel.NewSharedLogStore(*logPath)
+		} else {
+			ls, lsErr = kernel.NewLogStore(*logPath)
 		}
+		if lsErr != nil {
+			log.Fatalf("store: %v", lsErr)
+		}
+		defer ls.Close()
 		store = ls
-		log.Printf("store: JSONL log at %s", *logPath)
+		if *allowSharedLog {
+			log.Printf("store: JSONL log at %s — WARNING: --allow-shared-log, single-writer lock DISABLED (moos-kernel#40)", *logPath)
+		} else {
+			log.Printf("store: JSONL log at %s (single-writer lock held)", *logPath)
+		}
 	} else {
 		store = kernel.NewMemStore()
 		log.Println("store: in-memory (non-persistent)")

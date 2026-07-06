@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	slog "log"
 	"sort"
 	"strings"
 	"sync"
@@ -68,8 +69,33 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 		hdcIndex:    hdc.NewLiveIndex(0.3),
 		subscribers: make(map[string]chan graph.PersistedRewrite),
 	}
-	if len(entries) > 0 {
-		rt.logSeq.Store(entries[len(entries)-1].LogSeq)
+	// Seed the sequence counter from the MAX persisted log_seq, not the last
+	// entry's: after a multi-writer incident the tail can carry a re-appended
+	// block whose seq values are behind the true maximum, and last-entry
+	// seeding would mint duplicates forever after (moos-kernel#40). Duplicate
+	// seq values found during the scan are a log-integrity signal — warn, but
+	// keep replaying: fold.Replay already absorbs idempotent re-applies.
+	var maxSeq int64
+	seen := make(map[int64]int, len(entries))
+	var dupSeqs []int64 // distinct seq values that appear more than once
+	for _, e := range entries {
+		if e.LogSeq > maxSeq {
+			maxSeq = e.LogSeq
+		}
+		seen[e.LogSeq]++
+		if seen[e.LogSeq] == 2 {
+			dupSeqs = append(dupSeqs, e.LogSeq)
+		}
+	}
+	rt.logSeq.Store(maxSeq)
+	if len(dupSeqs) > 0 {
+		excess := len(entries) - len(seen)
+		sample := dupSeqs
+		if len(sample) > 8 {
+			sample = sample[:8]
+		}
+		slog.Printf("kernel: log integrity warning: %d log_seq values appear more than once (%d excess entries, e.g. %v) — multi-writer artifact, see moos-kernel#40; log_len=%d max_log_seq=%d",
+			len(dupSeqs), excess, sample, len(entries), maxSeq)
 	}
 	rt.hdcIndex.Recompute(state, nil)
 	return rt, nil
@@ -431,6 +457,25 @@ func (rt *Runtime) LogLen() int {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return len(rt.log)
+}
+
+// MaxLogSeq returns the highest log_seq STAMPED so far. Interpreting the
+// delta against LogLen: log_len > max_log_seq means the replayed log carries
+// multi-writer duplicate entries (moos-kernel#40; the delta is the cumulative
+// duplicate count); log_len < max_log_seq means seqs were stamped for
+// rewrites whose persist failed (the counter is not rolled back on Append
+// error — the resulting seq gap is benign, max-seeding tolerates it).
+func (rt *Runtime) MaxLogSeq() int64 {
+	return rt.logSeq.Load()
+}
+
+// LogStats returns LogLen and MaxLogSeq as one consistent snapshot — both
+// read under the same lock, so a poller (e.g. /healthz) never observes a
+// mid-batch skew between the two.
+func (rt *Runtime) LogStats() (logLen int, maxLogSeq int64) {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return len(rt.log), rt.logSeq.Load()
 }
 
 // HDCTypeExpressions returns a snapshot of the live in-memory type-expression index.
