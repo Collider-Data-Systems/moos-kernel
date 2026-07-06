@@ -79,7 +79,7 @@ Served on `--listen` (default `:8000`), CORS-wrapped.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/healthz` | GET | liveness + `ontology_version`, `t_day`, `log_len` |
+| `/healthz` | GET | liveness + `ontology_version`, `t_day`, `log_len`, `max_log_seq` (`log_len > max_log_seq` ⇒ replayed multi-writer duplicates, moos-kernel#40) |
 | `/state/nodes`, `/state/nodes/{urn}` | GET | folded node state |
 | `/state/relations`, `/state/relations/src/{urn}`, `/state/relations/tgt/{urn}` | GET | folded relations by side |
 | `/log`, `/log/stream` | GET | raw rewrite log (+ SSE tail) |
@@ -141,7 +141,8 @@ Race-detector run requires cgo/gcc.
 | Flag | Default | Purpose |
 |---|---|---|
 | `--ontology` | (none) | path to `ontology.json`; omit → no type validation, gates bypass (registry-less) |
-| `--log` | (none) | JSONL log path; omit → in-memory (non-persistent) |
+| `--log` | (none) | JSONL log path; omit → in-memory (non-persistent). Takes an exclusive single-writer lock — a second kernel on the same path fails at boot (moos-kernel#40) |
+| `--allow-shared-log` | false | UNSAFE: skip the single-writer lock on `--log`; concurrent writers interleave duplicate `log_seq` values (moos-kernel#40). Emergency recovery only |
 | `--listen` | `:8000` | HTTP transport address |
 | `--mcp-addr` | `:8080` | MCP SSE address |
 | `--mcp-stdio` | false | also run MCP on stdin/stdout |
