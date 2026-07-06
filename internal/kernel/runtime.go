@@ -42,6 +42,12 @@ type Runtime struct {
 
 	logSeq atomic.Int64
 
+	// preSeqEntries counts replayed entries that predate the log_seq field
+	// (deserialize to LogSeq 0; real seqs start at 1). Set once at replay,
+	// immutable after — new applies always stamp a real seq. Consumers
+	// subtract it from log_len before drift classification (moos-kernel#45).
+	preSeqEntries int
+
 	// sweepActor is the actor URN the time-driven sweep uses when emitting
 	// governance_proposal envelopes. Empty value → DefaultSweepActor. See
 	// SetSweepActor / RunTimedSweep in sweep.go.
@@ -75,10 +81,27 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 	// seeding would mint duplicates forever after (moos-kernel#40). Duplicate
 	// seq values found during the scan are a log-integrity signal — warn, but
 	// keep replaying: fold.Replay already absorbs idempotent re-applies.
+	//
+	// Entries with LogSeq == 0 predate the log_seq field entirely (early-2026
+	// seed lines carry only {"envelope":...}; real seqs start at 1). They are
+	// pre-seq-era legacy, NOT duplicates — counting them as duplicates was
+	// the moos-kernel#45 false positive. Track them separately so /healthz
+	// consumers can subtract them from log_len before drift classification.
 	var maxSeq int64
+	var preSeq int   // entries persisted before the log_seq field existed
+	var zeroTail int // zero-seq entries AFTER the first real seq — anomalous, not legacy
+	sawReal := false // legacy seed lines only ever exist as a leading prefix
 	seen := make(map[int64]int, len(entries))
-	var dupSeqs []int64 // distinct seq values that appear more than once
+	var dupSeqs []int64 // distinct real seq values that appear more than once
 	for _, e := range entries {
+		if e.LogSeq == 0 {
+			preSeq++
+			if sawReal {
+				zeroTail++
+			}
+			continue
+		}
+		sawReal = true
 		if e.LogSeq > maxSeq {
 			maxSeq = e.LogSeq
 		}
@@ -88,14 +111,27 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 		}
 	}
 	rt.logSeq.Store(maxSeq)
+	rt.preSeqEntries = preSeq
 	if len(dupSeqs) > 0 {
-		excess := len(entries) - len(seen)
+		excess := len(entries) - preSeq - len(seen)
 		sample := dupSeqs
 		if len(sample) > 8 {
 			sample = sample[:8]
 		}
 		log.Printf("kernel: log integrity warning: %d log_seq values appear more than once (%d excess entries, e.g. %v) — multi-writer artifact, see moos-kernel#40; log_len=%d max_log_seq=%d",
 			len(dupSeqs), excess, sample, len(entries), maxSeq)
+	}
+	if zeroTail > 0 {
+		// A missing seq after real seqs began is corruption / a partial write /
+		// a manual edit — never a legacy seed line. Still counted in
+		// preSeqEntries so the healthz arithmetic stays honest, but loudly
+		// flagged instead of silently classified benign (Copilot catch on #46).
+		log.Printf("kernel: log integrity warning: %d entry(ies) missing log_seq AFTER real seqs began — not legacy seed lines; inspect the jsonl (moos-kernel#45); log_len=%d max_log_seq=%d",
+			zeroTail, len(entries), maxSeq)
+	}
+	if preSeq-zeroTail > 0 {
+		log.Printf("kernel: replayed %d pre-log_seq-era entries (no seq field; legacy seed lines) — benign, see moos-kernel#45; log_len=%d max_log_seq=%d",
+			preSeq-zeroTail, len(entries), maxSeq)
 	}
 	rt.hdcIndex.Recompute(state, nil)
 	return rt, nil
@@ -476,6 +512,15 @@ func (rt *Runtime) LogStats() (logLen int, maxLogSeq int64) {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return len(rt.log), rt.logSeq.Load()
+}
+
+// LogSeqMissing returns the count of replayed entries that predate the
+// log_seq field (moos-kernel#45). Drift interpretation:
+// log_len - LogSeqMissing() == max_log_seq is a clean log; only the
+// remainder beyond that is multi-writer duplication (moos-kernel#40).
+// Immutable after replay — no lock needed.
+func (rt *Runtime) LogSeqMissing() int {
+	return rt.preSeqEntries
 }
 
 // HDCTypeExpressions returns a snapshot of the live in-memory type-expression index.
