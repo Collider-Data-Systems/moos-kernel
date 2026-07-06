@@ -25,7 +25,13 @@ func acquireLogLock(path string) (*os.File, error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("log_store: %q is already owned by another moos-kernel process (%v) — concurrent writers interleave duplicate log_seq values (moos-kernel#40); point this process at its own --log, or pass --allow-shared-log to bypass (unsafe)", path, err)
+		// Only EWOULDBLOCK/EAGAIN means "another kernel owns this log".
+		// Anything else (unsupported filesystem, ENOLCK, ...) is a plain
+		// lock failure — do NOT steer the operator toward the unsafe bypass.
+		if errno, ok := err.(syscall.Errno); ok && (errno == syscall.EWOULDBLOCK || errno == syscall.EAGAIN) {
+			return nil, fmt.Errorf("log_store: %q is already owned by another moos-kernel process (%v) — concurrent writers interleave duplicate log_seq values (moos-kernel#40); point this process at its own --log, or pass --allow-shared-log to bypass (unsafe)", path, err)
+		}
+		return nil, fmt.Errorf("log_store: flock %q: %w", path, err)
 	}
 	return f, nil
 }

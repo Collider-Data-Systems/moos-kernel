@@ -16,10 +16,12 @@ const maxLogLineBytes = 10 * 1024 * 1024 // 10 MB max per log line
 // Each line is one PersistedRewrite. The file is opened in O_APPEND mode.
 //
 // Multi-process sharing is enforced against: NewLogStore takes an exclusive
-// single-writer lock (a <path>.lock sidecar held for the store's lifetime),
-// because two kernels replaying the same file hold independent logSeq
-// counters and stale folds — they stamp duplicate log_seq values and pass
-// gates against state that never saw the other's writes (moos-kernel#40).
+// single-writer lock held for the store's lifetime (Windows: a share-mode-0
+// <path>.lock sidecar handle; unix: flock on the log file itself — see the
+// platform log_lock_*.go files), because two kernels replaying the same file
+// hold independent logSeq counters and stale folds — they stamp duplicate
+// log_seq values and pass gates against state that never saw the other's
+// writes (moos-kernel#40).
 type LogStore struct {
 	mu   sync.Mutex
 	path string
