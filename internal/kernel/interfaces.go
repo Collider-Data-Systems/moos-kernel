@@ -13,6 +13,7 @@ type InspectKernel interface {
 	RelationsTgt(urn graph.URN) []graph.Relation
 	Log() []graph.PersistedRewrite
 	LogLen() int
+	MaxLogSeq() int64
 }
 
 // WriteKernel provides write access to the kernel.

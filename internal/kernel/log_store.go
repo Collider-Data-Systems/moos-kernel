@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -13,21 +14,36 @@ import (
 const maxLogLineBytes = 10 * 1024 * 1024 // 10 MB max per log line
 
 // LogStore is a JSONL (newline-delimited JSON) append-only Store.
-// Each line is one PersistedRewrite. The file is opened in O_APPEND mode.
-// Safe for single-process use; not intended for multi-process sharing.
+// Single-writer enforced (moos-kernel#40): NewLogStore takes an exclusive
+// OS-level lock on the file (Windows: deny-write sharing; Unix: flock) and
+// holds the write handle for the store's lifetime. A second process pointed
+// at the same log — e.g. a stdio MCP sidecar sharing the live kernel's file —
+// fails fast at open instead of replaying stale state and re-stamping
+// duplicate log_seq values. Concurrent readers stay allowed.
 type LogStore struct {
 	mu   sync.Mutex
 	path string
+	f    *os.File // exclusively locked write handle, held for the store's lifetime
 }
 
 func NewLogStore(path string) (*LogStore, error) {
-	// Create or verify the file is writable
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := openLogExclusive(path)
 	if err != nil {
 		return nil, fmt.Errorf("log_store: open %q: %w", path, err)
 	}
-	f.Close()
-	return &LogStore{path: path}, nil
+	return &LogStore{path: path, f: f}, nil
+}
+
+// Close releases the exclusive lock. The store is unusable afterwards.
+func (l *LogStore) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f == nil {
+		return nil
+	}
+	err := l.f.Close()
+	l.f = nil
+	return err
 }
 
 func (l *LogStore) Append(entries []graph.PersistedRewrite) error {
@@ -37,13 +53,16 @@ func (l *LogStore) Append(entries []graph.PersistedRewrite) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("log_store: open for append: %w", err)
+	if l.f == nil {
+		return fmt.Errorf("log_store: store is closed")
 	}
-	defer f.Close()
+	// The held handle is the only writer (exclusive lock), so seek-to-end +
+	// write is equivalent to O_APPEND without releasing the lock.
+	if _, err := l.f.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("log_store: seek: %w", err)
+	}
 
-	w := bufio.NewWriter(f)
+	w := bufio.NewWriter(l.f)
 	for _, entry := range entries {
 		data, err := json.Marshal(entry)
 		if err != nil {

@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -68,11 +70,48 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 		hdcIndex:    hdc.NewLiveIndex(0.3),
 		subscribers: make(map[string]chan graph.PersistedRewrite),
 	}
-	if len(entries) > 0 {
-		rt.logSeq.Store(entries[len(entries)-1].LogSeq)
+	// Seed the counter from the MAXIMUM replayed seq, not the last entry —
+	// a multi-writer-damaged log (moos-kernel#40) can end on a duplicate
+	// stamped below the true high-water mark, and last-entry seeding would
+	// mint further collisions on the next apply.
+	maxSeq, dupSeqs := auditLogSeqs(entries)
+	rt.logSeq.Store(maxSeq)
+	if len(dupSeqs) > 0 {
+		log.Printf("kernel: WARNING: replayed log has %d duplicated log_seq value(s) %v — multi-writer history detected (moos-kernel#40); log_len=%d max_log_seq=%d",
+			len(dupSeqs), summarizeSeqs(dupSeqs), len(entries), maxSeq)
 	}
 	rt.hdcIndex.Recompute(state, nil)
 	return rt, nil
+}
+
+// auditLogSeqs returns the highest log_seq in the replayed entries and the
+// sorted list of seq values that occur more than once. A clean single-writer
+// log has len(entries) == maxSeq and no duplicates; divergence is the
+// multi-writer drift signature (moos-kernel#40).
+func auditLogSeqs(entries []graph.PersistedRewrite) (maxSeq int64, dupSeqs []int64) {
+	seen := make(map[int64]int, len(entries))
+	for _, e := range entries {
+		if e.LogSeq > maxSeq {
+			maxSeq = e.LogSeq
+		}
+		seen[e.LogSeq]++
+	}
+	for seq, n := range seen {
+		if n > 1 {
+			dupSeqs = append(dupSeqs, seq)
+		}
+	}
+	slices.Sort(dupSeqs)
+	return maxSeq, dupSeqs
+}
+
+// summarizeSeqs renders a bounded preview of a seq list for log output.
+func summarizeSeqs(seqs []int64) []int64 {
+	const cap = 24
+	if len(seqs) <= cap {
+		return seqs
+	}
+	return seqs[:cap]
 }
 
 // Apply validates and applies one Envelope atomically.
@@ -431,6 +470,14 @@ func (rt *Runtime) LogLen() int {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return len(rt.log)
+}
+
+// MaxLogSeq returns the highest log_seq stamped so far (the replayed maximum
+// after boot, advanced by each apply). On a clean single-writer log it equals
+// LogLen(); a gap between the two is observable multi-writer drift
+// (moos-kernel#40) — surfaced on /healthz as max_log_seq.
+func (rt *Runtime) MaxLogSeq() int64 {
+	return rt.logSeq.Load()
 }
 
 // HDCTypeExpressions returns a snapshot of the live in-memory type-expression index.
