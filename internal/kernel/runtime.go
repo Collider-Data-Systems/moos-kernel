@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	slog "log"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -94,7 +94,7 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 		if len(sample) > 8 {
 			sample = sample[:8]
 		}
-		slog.Printf("kernel: log integrity warning: %d log_seq values appear more than once (%d excess entries, e.g. %v) — multi-writer artifact, see moos-kernel#40; log_len=%d max_log_seq=%d",
+		log.Printf("kernel: log integrity warning: %d log_seq values appear more than once (%d excess entries, e.g. %v) — multi-writer artifact, see moos-kernel#40; log_len=%d max_log_seq=%d",
 			len(dupSeqs), excess, sample, len(entries), maxSeq)
 	}
 	rt.hdcIndex.Recompute(state, nil)

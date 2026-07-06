@@ -37,8 +37,9 @@ func TestLogStoreLockErrorDiscrimination(t *testing.T) {
 	}
 }
 
-// TestLogStoreAppendAfterClose — appends on a closed locked store must not
-// silently fall back to the shared per-Append path.
+// TestLogStoreAppendAfterClose — appends on a closed store must error, not
+// silently fall back to the unlocked per-Append path (Copilot re-review
+// finding on #42).
 func TestLogStoreAppendAfterClose(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "moos.jsonl")
 	s, err := NewLogStore(path)
@@ -48,9 +49,10 @@ func TestLogStoreAppendAfterClose(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	// After Close the store's write handle is gone; the shared fallback
-	// would still succeed on disk, so guard the invariant that matters:
-	// a closed store keeps the file unlocked for the next NewLogStore.
+	if err := s.Append([]graph.PersistedRewrite{{LogSeq: 1}}); err == nil {
+		t.Fatal("Append after Close must error, not degrade to the unlocked path")
+	}
+	// And the lock is released for the next writer.
 	s2, err := NewLogStore(path)
 	if err != nil {
 		t.Fatalf("re-acquire after Close must succeed: %v", err)

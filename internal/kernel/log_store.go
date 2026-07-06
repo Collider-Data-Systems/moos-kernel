@@ -26,9 +26,11 @@ const maxLogLineBytes = 10 * 1024 * 1024 // 10 MB max per log line
 // saw the other's writes (moos-kernel#40). The locked handle doubles as the
 // write handle: Append writes through it.
 type LogStore struct {
-	mu   sync.Mutex
-	path string
-	w    *os.File // locked write handle; nil when opened shared (per-Append opens)
+	mu     sync.Mutex
+	path   string
+	w      *os.File // locked write handle; nil when shared or closed
+	shared bool     // opened via NewSharedLogStore (or a no-lock platform)
+	closed bool     // Close was called; the store must reject further writes
 }
 
 // NewLogStore opens the JSONL store and takes the single-writer lock.
@@ -58,14 +60,16 @@ func NewSharedLogStore(path string) (*LogStore, error) {
 		return nil, fmt.Errorf("log_store: open %q: %w", path, err)
 	}
 	f.Close()
-	return &LogStore{path: path}, nil
+	return &LogStore{path: path, shared: true}, nil
 }
 
-// Close releases the single-writer lock. The store must not be used after.
-// No-op for stores opened via NewSharedLogStore.
+// Close releases the single-writer lock. The store must not be used after —
+// Append returns an error rather than silently degrading to the unlocked
+// path. Idempotent; also finalizes stores opened via NewSharedLogStore.
 func (l *LogStore) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.closed = true
 	if l.w == nil {
 		return nil
 	}
@@ -80,6 +84,10 @@ func (l *LogStore) Append(entries []graph.PersistedRewrite) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.closed {
+		return fmt.Errorf("log_store: store is closed")
+	}
 
 	var f *os.File
 	if l.w != nil {
