@@ -137,10 +137,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if s.registry != nil {
 		ontologyVersion = s.registry.Version
 	}
+	logLen, maxLogSeq := s.inspect.LogStats()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":           "ok",
-		"log_len":          s.inspect.LogLen(),
-		"max_log_seq":      s.inspect.MaxLogSeq(),
+		"log_len":          logLen,
+		"max_log_seq":      maxLogSeq,
 		"t_day":            currentTDay(),
 		"ontology_version": ontologyVersion,
 	})

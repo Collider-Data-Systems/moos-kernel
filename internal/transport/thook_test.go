@@ -40,7 +40,7 @@ func (f *fakeInspect) RelationsSrc(graph.URN) []graph.Relation { return nil }
 func (f *fakeInspect) RelationsTgt(graph.URN) []graph.Relation { return nil }
 func (f *fakeInspect) Log() []graph.PersistedRewrite           { return nil }
 func (f *fakeInspect) LogLen() int                             { return 0 }
-func (f *fakeInspect) MaxLogSeq() int64                        { return 0 }
+func (f *fakeInspect) LogStats() (int, int64)                  { return 0, 0 }
 
 // stateWithStartableHook builds a small state with t187-kernel-proper and a
 // v310-delivery.startable t_hook whose predicate mirrors the one ADDed in

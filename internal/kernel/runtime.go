@@ -5,8 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
-	"slices"
+	slog "log"
 	"sort"
 	"strings"
 	"sync"
@@ -70,48 +69,36 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 		hdcIndex:    hdc.NewLiveIndex(0.3),
 		subscribers: make(map[string]chan graph.PersistedRewrite),
 	}
-	// Seed the counter from the MAXIMUM replayed seq, not the last entry —
-	// a multi-writer-damaged log (moos-kernel#40) can end on a duplicate
-	// stamped below the true high-water mark, and last-entry seeding would
-	// mint further collisions on the next apply.
-	maxSeq, dupSeqs := auditLogSeqs(entries)
-	rt.logSeq.Store(maxSeq)
-	if len(dupSeqs) > 0 {
-		log.Printf("kernel: WARNING: replayed log has %d duplicated log_seq value(s) %v — multi-writer history detected (moos-kernel#40); log_len=%d max_log_seq=%d",
-			len(dupSeqs), summarizeSeqs(dupSeqs), len(entries), maxSeq)
-	}
-	rt.hdcIndex.Recompute(state, nil)
-	return rt, nil
-}
-
-// auditLogSeqs returns the highest log_seq in the replayed entries and the
-// sorted list of seq values that occur more than once. A clean single-writer
-// log has len(entries) == maxSeq and no duplicates; divergence is the
-// multi-writer drift signature (moos-kernel#40).
-func auditLogSeqs(entries []graph.PersistedRewrite) (maxSeq int64, dupSeqs []int64) {
+	// Seed the sequence counter from the MAX persisted log_seq, not the last
+	// entry's: after a multi-writer incident the tail can carry a re-appended
+	// block whose seq values are behind the true maximum, and last-entry
+	// seeding would mint duplicates forever after (moos-kernel#40). Duplicate
+	// seq values found during the scan are a log-integrity signal — warn, but
+	// keep replaying: fold.Replay already absorbs idempotent re-applies.
+	var maxSeq int64
 	seen := make(map[int64]int, len(entries))
+	var dupSeqs []int64 // distinct seq values that appear more than once
 	for _, e := range entries {
 		if e.LogSeq > maxSeq {
 			maxSeq = e.LogSeq
 		}
 		seen[e.LogSeq]++
-	}
-	for seq, n := range seen {
-		if n > 1 {
-			dupSeqs = append(dupSeqs, seq)
+		if seen[e.LogSeq] == 2 {
+			dupSeqs = append(dupSeqs, e.LogSeq)
 		}
 	}
-	slices.Sort(dupSeqs)
-	return maxSeq, dupSeqs
-}
-
-// summarizeSeqs renders a bounded preview of a seq list for log output.
-func summarizeSeqs(seqs []int64) []int64 {
-	const cap = 24
-	if len(seqs) <= cap {
-		return seqs
+	rt.logSeq.Store(maxSeq)
+	if len(dupSeqs) > 0 {
+		excess := len(entries) - len(seen)
+		sample := dupSeqs
+		if len(sample) > 8 {
+			sample = sample[:8]
+		}
+		slog.Printf("kernel: log integrity warning: %d log_seq values appear more than once (%d excess entries, e.g. %v) — multi-writer artifact, see moos-kernel#40; log_len=%d max_log_seq=%d",
+			len(dupSeqs), excess, sample, len(entries), maxSeq)
 	}
-	return seqs[:cap]
+	rt.hdcIndex.Recompute(state, nil)
+	return rt, nil
 }
 
 // Apply validates and applies one Envelope atomically.
@@ -472,12 +459,23 @@ func (rt *Runtime) LogLen() int {
 	return len(rt.log)
 }
 
-// MaxLogSeq returns the highest log_seq stamped so far (the replayed maximum
-// after boot, advanced by each apply). On a clean single-writer log it equals
-// LogLen(); a gap between the two is observable multi-writer drift
-// (moos-kernel#40) — surfaced on /healthz as max_log_seq.
+// MaxLogSeq returns the highest log_seq STAMPED so far. Interpreting the
+// delta against LogLen: log_len > max_log_seq means the replayed log carries
+// multi-writer duplicate entries (moos-kernel#40; the delta is the cumulative
+// duplicate count); log_len < max_log_seq means seqs were stamped for
+// rewrites whose persist failed (the counter is not rolled back on Append
+// error — the resulting seq gap is benign, max-seeding tolerates it).
 func (rt *Runtime) MaxLogSeq() int64 {
 	return rt.logSeq.Load()
+}
+
+// LogStats returns LogLen and MaxLogSeq as one consistent snapshot — both
+// read under the same lock, so a poller (e.g. /healthz) never observes a
+// mid-batch skew between the two.
+func (rt *Runtime) LogStats() (logLen int, maxLogSeq int64) {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return len(rt.log), rt.logSeq.Load()
 }
 
 // HDCTypeExpressions returns a snapshot of the live in-memory type-expression index.

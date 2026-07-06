@@ -108,7 +108,8 @@ go run ./cmd/moos \
 | Flag | Default | Purpose |
 |------|---------|--------|
 | `--ontology` | (none) | Path to ontology.json; omit for no type validation (liveness/admin gates also bypass in registry-less mode) |
-| `--log` | (none) | JSONL log path; omit for in-memory (non-persistent) |
+| `--log` | (none) | JSONL log path; omit for in-memory (non-persistent). Exclusive single-writer lock — a second kernel on the same path fails at boot (moos-kernel#40) |
+| `--allow-shared-log` | false | UNSAFE: skip the single-writer lock on `--log` (moos-kernel#40); emergency recovery only |
 | `--listen` | `:8000` | HTTP transport address |
 | `--mcp-addr` | `:8080` | MCP SSE server address |
 | `--mcp-stdio` | false | Also run MCP on stdin/stdout |
