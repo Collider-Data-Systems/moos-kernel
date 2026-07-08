@@ -60,7 +60,8 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 	// pair, additional pairs, or both. Spec-absent WFs (no declared pairs at
 	// all) keep the legacy permissive behavior so partial registries and test
 	// fixtures that omit port specs still validate.
-	if wfSpec.SrcPort != "" || wfSpec.TgtPort != "" || len(wfSpec.AdditionalPortPairs) > 0 {
+	pairsDeclared := wfSpec.SrcPort != "" || wfSpec.TgtPort != "" || len(wfSpec.AdditionalPortPairs) > 0
+	if pairsDeclared {
 		if !linkPairDeclared(wfSpec, env.SrcPort, env.TgtPort) {
 			return fmt.Errorf("operad: port pair (%s, %s) not declared for %s; expected %s",
 				env.SrcPort, env.TgtPort, env.RewriteCategory,
@@ -68,12 +69,24 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 		}
 	}
 
-	// Port color compatibility (§12.2). Unknown colors remain permissive so
-	// registry gaps don't hard-block rewrites; strict pair validation above
-	// already catches typo'd ports.
+	// Port color compatibility (§12.2). FAIL-CLOSED for WFs with declared
+	// pairs (moos-kernel#50): a declared pair whose port lacks a color in
+	// Registry.PortColors is rejected — the map must cover every declared
+	// port (DefaultPortColors does for ontology v4.0.1; later ontologies
+	// extend via port_color_compatibility.port_color_map without a kernel
+	// release). Spec-absent WFs keep the legacy permissive skip, matching
+	// the pair gate above. A port explicitly mapped to the empty color is a
+	// documented exemption (e.g. bound-to, ambiguous compute-or-storage) and
+	// skips the matrix check.
 	srcColor, tgtColor, err := r.resolvePortColors(env.SrcPort, env.TgtPort)
 	if err != nil {
+		if pairsDeclared {
+			return fmt.Errorf("operad: %v — color gate is fail-closed for WFs with declared pairs (§12.2, moos-kernel#50)", err)
+		}
 		return nil
+	}
+	if srcColor == "" || tgtColor == "" {
+		return nil // explicitly exempt port — matrix check skipped by declaration
 	}
 	if !r.PortColorMatrix.Allowed(srcColor, tgtColor, env.RewriteCategory) {
 		return fmt.Errorf("operad: port color incompatibility: %s → %s not allowed under %s (§12.2)",
@@ -205,46 +218,36 @@ func (r *Registry) ValidateUNLINK(env graph.Envelope) error {
 	return nil
 }
 
-// resolvePortColors looks up port colors from the registry's declared pairs.
-// Returns an error if either port is unknown.
+// resolvePortColors looks up both port colors from Registry.PortColors —
+// the loader-merged map of DefaultPortColors plus any ontology
+// port_color_compatibility.port_color_map overrides. A nil map (zero-value
+// Registry, partial test fixtures) falls back to DefaultPortColors so bare
+// registries resolve the canonical vocabulary.
+//
+// Three outcomes per port:
+//   - present with a color: returned for the §12.2 matrix check
+//   - present with the EMPTY color: explicit exemption — returned as "" with
+//     nil error; the caller skips the matrix check (e.g. bound-to)
+//   - absent: error naming the port — ValidateLINK rejects (fail-closed) on
+//     WFs with declared pairs (moos-kernel#50)
 func (r *Registry) resolvePortColors(srcPort, tgtPort string) (graph.PortColor, graph.PortColor, error) {
-	srcColor := portColorFromName(srcPort)
-	tgtColor := portColorFromName(tgtPort)
-	if srcColor == "" || tgtColor == "" {
-		return "", "", fmt.Errorf("unknown port color for %q or %q", srcPort, tgtPort)
+	colors := r.PortColors
+	if colors == nil {
+		colors = DefaultPortColors()
+	}
+	srcColor, srcOk := colors[srcPort]
+	tgtColor, tgtOk := colors[tgtPort]
+	if !srcOk || !tgtOk {
+		missing := make([]string, 0, 2)
+		if !srcOk {
+			missing = append(missing, fmt.Sprintf("src %q", srcPort))
+		}
+		if !tgtOk {
+			missing = append(missing, fmt.Sprintf("tgt %q", tgtPort))
+		}
+		return "", "", fmt.Errorf("no declared color for port %s (§12.1)", strings.Join(missing, ", "))
 	}
 	return srcColor, tgtColor, nil
-}
-
-// portColorFromName maps well-known port names to their canonical color (§12.1).
-func portColorFromName(port string) graph.PortColor {
-	switch port {
-	case "governs", "governed-by", "granted-by", "identity", "promotes-to", "promotion-target":
-		return graph.ColorAuth
-	case "owns", "child", "hosts", "hosted-on", "contains", "contained-in", "binds":
-		return graph.ColorTopology
-	case "exposes", "exposed-by", "connects-to", "connected-to", "implements", "implemented-by",
-		"routes-to", "routed-from", "shard-of", "sharded-by":
-		return graph.ColorTransport
-	case "computes-on", "computed-by":
-		return graph.ColorCompute
-	case "persisted-in", "persists", "synced-via", "sync-target", "provides-kb", "kb-source",
-		"produces", "produced-by", "asserts", "asserted-in", "tagged", "tagged-in":
-		return graph.ColorStorage
-	case "bound-to":
-		return "" // ambiguous: compute or storage depending on src node type — skip color check
-	case "participates", "participated-by", "focus", "on",
-		"anchors", "anchor", "causes", "summarizes", "daily-summary", "depends-on", "depended-by", "participant",
-		"triggers", "triggered-by", "guards", "guarded-by", "emits", "emitted-by", "watches", "watched-by",
-		"has-occupant", "is-occupant-of", // v3.10 WF19 session-occupancy port pair (§M19)
-		"pins-urn", "pinned-by-session", // v3.12 WF19 session pins (§M18, D19.3)
-		"filtered-by", "filters-session", // v3.12 WF19 session filter binding (§M18, D19.4)
-		"mounts-tool", "tool-mounted-in-session": // v3.12 WF19 session tool mount (§M20, D20.1)
-		return graph.ColorWorkflow
-	case "projected-to", "rendered-as", "displayed-as":
-		return graph.ColorProjection
-	}
-	return "" // unknown port
 }
 
 // checkAuthority checks whether the actor satisfies the required authority scope.

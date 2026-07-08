@@ -103,7 +103,32 @@ func LoadRegistry(path string) (*Registry, error) {
 		reg.PortColorMatrix = parseColorMatrix(raw.PortColorCompatibility.Matrix)
 	}
 
+	// Port-name → color map (§12.1, moos-kernel#50): built-in defaults merged
+	// with the optional ontology override object. The override lets later
+	// ontology versions add or recolor ports without a kernel release; an
+	// empty-string color declares an explicit exemption (matrix check
+	// skipped). Unknown color names are a load error — a typo here would
+	// otherwise silently weaken or brick the fail-closed gate.
+	reg.PortColors = DefaultPortColors()
+	for port, colorName := range raw.PortColorCompatibility.PortColorMap {
+		color := graph.PortColor(colorName)
+		if colorName != "" && !knownPortColor(color) {
+			return nil, fmt.Errorf("operad: port_color_map: unknown color %q for port %q (valid: auth, topology, transport, compute, storage, workflow, semantic, projection, or \"\" for exempt)", colorName, port)
+		}
+		reg.PortColors[port] = color
+	}
+
 	return reg, nil
+}
+
+// knownPortColor reports whether c is one of the eight §12.1 colors.
+func knownPortColor(c graph.PortColor) bool {
+	switch c {
+	case graph.ColorAuth, graph.ColorTopology, graph.ColorTransport, graph.ColorCompute,
+		graph.ColorStorage, graph.ColorWorkflow, graph.ColorSemantic, graph.ColorProjection:
+		return true
+	}
+	return false
 }
 
 func parseNodeTypeSpec(raw rawNodeType) NodeTypeSpec {
@@ -225,4 +250,10 @@ type rawAdditionalPortPair struct {
 
 type rawPortColorCompat struct {
 	Matrix map[string]map[string]any `json:"matrix"`
+	// PortColorMap is the optional port-name → color-name override object
+	// (moos-kernel#50). Absent in ontology v4.0.1 — DefaultPortColors carries
+	// the full vocabulary until an ontology round adopts this key. Sibling
+	// keys (description, port_colors vocabulary array, projection_rule,
+	// semantic_rule, declared_pairs_by_wf) remain doc-only and unloaded.
+	PortColorMap map[string]string `json:"port_color_map"`
 }
