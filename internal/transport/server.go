@@ -388,7 +388,14 @@ func (s *Server) handleGetPortColors(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.registry.PortColorMatrix)
+	// Both halves of the §12 gate (moos-kernel#50): the color×color matrix
+	// (§12.2) and the merged port-name→color map (§12.1, defaults +
+	// port_color_map overrides, "" = explicit exemption) — so envelope
+	// authors can introspect exactly what a fail-closed rejection consulted.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"matrix":      s.registry.PortColorMatrix,
+		"port_colors": s.registry.PortColors,
+	})
 }
 
 // --- HDC ---

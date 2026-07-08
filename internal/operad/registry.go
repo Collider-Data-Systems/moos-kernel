@@ -16,6 +16,14 @@ type Registry struct {
 	NodeTypes         map[graph.TypeID]NodeTypeSpec
 	RewriteCategories map[graph.RewriteCategory]RewriteCategorySpec
 	PortColorMatrix   PortColorMatrix
+	// PortColors is the §12.1 port-name → color map consulted by the §12.2
+	// color gate. Loader-populated: DefaultPortColors() merged with any
+	// port_color_compatibility.port_color_map overrides from ontology.json
+	// (moos-kernel#50). An entry with the empty color is an explicit
+	// exemption (matrix check skipped); an absent entry is unknown and
+	// fail-closed on WFs with declared pairs. nil falls back to
+	// DefaultPortColors() in resolvePortColors.
+	PortColors map[string]graph.PortColor
 }
 
 // NodeTypeSpec describes the valid structure of one node type.
@@ -115,5 +123,6 @@ func EmptyRegistry() *Registry {
 		NodeTypes:        make(map[graph.TypeID]NodeTypeSpec),
 		RewriteCategories: make(map[graph.RewriteCategory]RewriteCategorySpec),
 		PortColorMatrix:  make(PortColorMatrix),
+		PortColors:       DefaultPortColors(),
 	}
 }
