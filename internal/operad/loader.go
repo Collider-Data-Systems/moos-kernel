@@ -3,7 +3,10 @@ package operad
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"sort"
+	"strings"
 
 	"moos/kernel/internal/graph"
 )
@@ -105,20 +108,58 @@ func LoadRegistry(path string) (*Registry, error) {
 
 	// Port-name → color map (§12.1, moos-kernel#50): built-in defaults merged
 	// with the optional ontology override object. The override lets later
-	// ontology versions add or recolor ports without a kernel release; an
-	// empty-string color declares an explicit exemption (matrix check
-	// skipped). Unknown color names are a load error — a typo here would
-	// otherwise silently weaken or brick the fail-closed gate.
+	// ontology versions add or recolor ports without a kernel release; the
+	// literal empty-string color declares an explicit exemption (matrix
+	// check skipped). Unknown color names and JSON null are load errors — a
+	// typo or a None-emitting script would otherwise silently weaken the
+	// fail-closed gate (null would alias onto the exemption).
 	reg.PortColors = DefaultPortColors()
 	for port, colorName := range raw.PortColorCompatibility.PortColorMap {
-		color := graph.PortColor(colorName)
-		if colorName != "" && !knownPortColor(color) {
-			return nil, fmt.Errorf("operad: port_color_map: unknown color %q for port %q (valid: auth, topology, transport, compute, storage, workflow, semantic, projection, or \"\" for exempt)", colorName, port)
+		if colorName == nil {
+			return nil, fmt.Errorf("operad: port_color_map: null color for port %q — use \"\" for an explicit exemption", port)
+		}
+		color := graph.PortColor(*colorName)
+		if *colorName != "" && !knownPortColor(color) {
+			return nil, fmt.Errorf("operad: port_color_map: unknown color %q for port %q (valid: auth, topology, transport, compute, storage, workflow, semantic, projection, or \"\" for exempt)", *colorName, port)
 		}
 		reg.PortColors[port] = color
 	}
 
+	// Load-time coverage check (soft, moos-kernel#50 review): every declared
+	// pair's ports should have a color entry — an uncovered port means every
+	// LINK on that pair will be rejected fail-closed at validation time.
+	// Warn loudly but boot anyway: refusing to start on a future ontology's
+	// new pair would trade a scoped LINK failure for a bricked fleet.
+	var uncovered []string
+	for wf, spec := range reg.RewriteCategories {
+		for _, pr := range declaredPairs(spec) {
+			for _, port := range pr {
+				if _, ok := reg.PortColors[port]; !ok {
+					uncovered = append(uncovered, fmt.Sprintf("%s:%s", wf, port))
+				}
+			}
+		}
+	}
+	if len(uncovered) > 0 {
+		sort.Strings(uncovered)
+		log.Printf("operad: WARNING — %d declared port(s) have no color; LINKs on their pairs will be REJECTED fail-closed (§12.2): %s (add them to port_color_compatibility.port_color_map)",
+			len(uncovered), strings.Join(uncovered, ", "))
+	}
+
 	return reg, nil
+}
+
+// declaredPairs returns every (src, tgt) port pair the WF declares —
+// the primary pair (when present) plus all additional_port_pairs.
+func declaredPairs(spec RewriteCategorySpec) [][2]string {
+	pairs := make([][2]string, 0, 1+len(spec.AdditionalPortPairs))
+	if spec.SrcPort != "" || spec.TgtPort != "" {
+		pairs = append(pairs, [2]string{spec.SrcPort, spec.TgtPort})
+	}
+	for _, ap := range spec.AdditionalPortPairs {
+		pairs = append(pairs, [2]string{ap.SrcPort, ap.TgtPort})
+	}
+	return pairs
 }
 
 // knownPortColor reports whether c is one of the eight §12.1 colors.
@@ -252,8 +293,10 @@ type rawPortColorCompat struct {
 	Matrix map[string]map[string]any `json:"matrix"`
 	// PortColorMap is the optional port-name → color-name override object
 	// (moos-kernel#50). Absent in ontology v4.0.1 — DefaultPortColors carries
-	// the full vocabulary until an ontology round adopts this key. Sibling
-	// keys (description, port_colors vocabulary array, projection_rule,
-	// semantic_rule, declared_pairs_by_wf) remain doc-only and unloaded.
-	PortColorMap map[string]string `json:"port_color_map"`
+	// the full vocabulary until an ontology round adopts this key. Values are
+	// pointers so JSON null is distinguishable from the literal "" exemption
+	// (null is a load error). Sibling keys (description, port_colors
+	// vocabulary array, projection_rule, semantic_rule, declared_pairs_by_wf)
+	// remain doc-only and unloaded.
+	PortColorMap map[string]*string `json:"port_color_map"`
 }

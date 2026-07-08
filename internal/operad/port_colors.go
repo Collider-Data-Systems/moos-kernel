@@ -72,7 +72,7 @@ func DefaultPortColors() map[string]graph.PortColor {
 		"sync-target":  graph.ColorStorage,
 		"provides-kb":  graph.ColorStorage,
 		"kb-source":    graph.ColorStorage,
-		"produces":     graph.ColorStorage,
+		"produces":     graph.ColorStorage, // authored rows carry storage|workflow; storage kept (pre-#50 behavior; port not in any loaded pair)
 		"produced-by":  graph.ColorStorage,
 		"asserts":      graph.ColorStorage,
 		"asserted-in":  graph.ColorStorage,
@@ -104,7 +104,7 @@ func DefaultPortColors() map[string]graph.PortColor {
 		"triggered-by":            graph.ColorWorkflow,
 		"guards":                  graph.ColorWorkflow,
 		"guarded-by":              graph.ColorWorkflow,
-		"emits":                   graph.ColorWorkflow,
+		"emits":                   graph.ColorWorkflow, // authored rows carry workflow|semantic; workflow kept (pre-#50 behavior; port not in any loaded pair)
 		"emitted-by":              graph.ColorWorkflow,
 		"watches":                 graph.ColorWorkflow,
 		"watched-by":              graph.ColorWorkflow,

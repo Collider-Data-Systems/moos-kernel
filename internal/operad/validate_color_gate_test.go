@@ -119,6 +119,33 @@ func TestValidateLINK_ColorIncompatibilityRejected(t *testing.T) {
 	}
 }
 
+// TestValidateLINK_PhantomPairStillRejectedByDeclarationGate automates the
+// live-gate case: the declared_pairs_by_wf phantom rows (claims-session /
+// session-claimed-by — never declared on WF19, retained as history per the
+// 4.0.1 note) are rejected by the DECLARATION gate, not the color gate. The
+// ports are deliberately uncolored AND undeclared; declaration must win.
+func TestValidateLINK_PhantomPairStillRejectedByDeclarationGate(t *testing.T) {
+	reg := buildTestRegistry() // declares WF19 primary + has-occupant + pins-urn
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: graph.WF19,
+		SrcPort:         "claims-session",
+		TgtPort:         "session-claimed-by",
+		SrcURN:          "urn:moos:session:test",
+		TgtURN:          "urn:moos:agent:test",
+	}
+	err := reg.ValidateLINK(env)
+	if err == nil {
+		t.Fatalf("phantom WF19 pair should be rejected")
+	}
+	if !strings.Contains(err.Error(), "port pair") {
+		t.Errorf("rejection should come from the declaration gate ('port pair'); got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "no declared color") {
+		t.Errorf("rejection should not reach the color gate; got %q", err.Error())
+	}
+}
+
 // TestResolvePortColors_AbsentPortNamesTheSide: the error should say which
 // side lacks a color so envelope authors can fix the right port.
 func TestResolvePortColors_AbsentPortNamesTheSide(t *testing.T) {
@@ -197,6 +224,7 @@ var canonicalPairs = []struct {
 	{"WF11", "synced-via", "sync-target"},
 	{"WF12", "provides-kb", "kb-source"},
 	{"WF13", "promotes-to", "promotion-target"},
+	{"WF14", "implements", "implemented-by"},
 	{"WF15", "{semantic}", "{semantic}"},
 	{"WF16", "routes-to", "routed-from"},
 	{"WF17", "triggers", "triggered-by"},
