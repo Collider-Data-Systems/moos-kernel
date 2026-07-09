@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	slog "log"
+	"time"
 
 	"moos/kernel/internal/graph"
 )
@@ -24,7 +25,7 @@ func Replay(entries []graph.PersistedRewrite) (graph.GraphState, error) {
 	state := graph.NewGraphState()
 
 	for i, pr := range entries {
-		next, _, err := Evaluate(state, pr.Envelope)
+		next, _, err := EvaluateAt(state, pr.Envelope, replayAppliedAt(pr))
 		if err != nil {
 			if isIdempotentSkip(pr.Envelope.RewriteType, err) {
 				slog.Printf("replay: skipping idempotent error at seq %d (index %d, %s): %v",
@@ -64,3 +65,15 @@ func (e *ReplayError) Error() string {
 }
 
 func (e *ReplayError) Unwrap() error { return e.Cause }
+
+func replayAppliedAt(pr graph.PersistedRewrite) time.Time {
+	if !pr.AppliedAt.IsZero() {
+		return pr.AppliedAt
+	}
+	if !pr.Timestamp.IsZero() {
+		return pr.Timestamp
+	}
+	// Legacy/malformed log lines without any timestamp keep a stable zero time
+	// so replay remains deterministic and never consults wall clock.
+	return time.Time{}
+}

@@ -15,15 +15,23 @@ import (
 // authority scope) is NOT done here — that is the operad layer's responsibility.
 // fold only enforces structural invariants: existence, immutability, version.
 func Evaluate(state graph.GraphState, env graph.Envelope) (graph.GraphState, graph.EvalResult, error) {
+	return EvaluateAt(state, env, time.Now().UTC())
+}
+
+// EvaluateAt applies one Envelope using the provided timestamp for structural
+// CreatedAt fields (node/relation). Runtime applies should pass the exact
+// persisted AppliedAt so replay remains bit-deterministic over time.
+func EvaluateAt(state graph.GraphState, env graph.Envelope, appliedAt time.Time) (graph.GraphState, graph.EvalResult, error) {
 	if err := validateEnvelopeStructure(env); err != nil {
 		return state, graph.EvalResult{}, err
 	}
+	ts := appliedAt.UTC()
 
 	switch env.RewriteType {
 	case graph.ADD:
-		return applyADD(state, env)
+		return applyADD(state, env, ts)
 	case graph.LINK:
-		return applyLINK(state, env)
+		return applyLINK(state, env, ts)
 	case graph.MUTATE:
 		return applyMUTATE(state, env)
 	case graph.UNLINK:
@@ -33,7 +41,7 @@ func Evaluate(state graph.GraphState, env graph.Envelope) (graph.GraphState, gra
 	}
 }
 
-func applyADD(state graph.GraphState, env graph.Envelope) (graph.GraphState, graph.EvalResult, error) {
+func applyADD(state graph.GraphState, env graph.Envelope, createdAt time.Time) (graph.GraphState, graph.EvalResult, error) {
 	if _, exists := state.Nodes[env.NodeURN]; exists {
 		return state, graph.EvalResult{}, fmt.Errorf("%w: %s", ErrNodeExists, env.NodeURN)
 	}
@@ -48,7 +56,7 @@ func applyADD(state graph.GraphState, env graph.Envelope) (graph.GraphState, gra
 		URN:        env.NodeURN,
 		TypeID:     env.TypeID,
 		Properties: props,
-		CreatedAt:  time.Now().UTC(),
+		CreatedAt:  createdAt,
 		Version:    1,
 	}
 	// Maintain the NodesByType index so sweep/t-cone can look up nodes by
@@ -58,7 +66,7 @@ func applyADD(state graph.GraphState, env graph.Envelope) (graph.GraphState, gra
 	return next, graph.EvalResult{AffectedNodeURN: env.NodeURN}, nil
 }
 
-func applyLINK(state graph.GraphState, env graph.Envelope) (graph.GraphState, graph.EvalResult, error) {
+func applyLINK(state graph.GraphState, env graph.Envelope, createdAt time.Time) (graph.GraphState, graph.EvalResult, error) {
 	if _, exists := state.Nodes[env.SrcURN]; !exists {
 		return state, graph.EvalResult{}, fmt.Errorf("%w: src %s", ErrNodeNotFound, env.SrcURN)
 	}
@@ -81,7 +89,7 @@ func applyLINK(state graph.GraphState, env graph.Envelope) (graph.GraphState, gr
 		TgtURN:          env.TgtURN,
 		TgtPort:         env.TgtPort,
 		ContractURN:     env.ContractURN,
-		CreatedAt:       time.Now().UTC(),
+		CreatedAt:       createdAt,
 	}
 	// Maintain the by-endpoint relation indexes so occupancy walks and
 	// t-cone neighbourhood queries run in O(edges-at-urn) instead of
