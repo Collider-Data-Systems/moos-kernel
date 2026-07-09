@@ -19,6 +19,18 @@ type Engine struct {
 	State *graph.GraphState
 }
 
+// FiringKind identifies which evaluation pass produced a Firing. Typed (not
+// free-form strings) so adding a new kind is a compile-time change at every
+// routing switch rather than a silent runtime bypass (Copilot catch, PR #56).
+type FiringKind string
+
+const (
+	// FiringReactor — Pass 1, watcher→reactor chain (WF17).
+	FiringReactor FiringKind = "reactor"
+	// FiringTHook — Pass 2, t_hook owned by the affected node (M6).
+	FiringTHook FiringKind = "t_hook"
+)
+
 // Firing is a proposed rewrite with provenance: which pass produced it and,
 // for t_hook firings, which hook node. The kernel needs the distinction —
 // t_hook (M6 event pathway) firings are STAGED as governance_proposals
@@ -26,8 +38,8 @@ type Engine struct {
 // keep the WF17 immediate-apply path.
 type Firing struct {
 	Proposal   graph.Envelope
-	SourceHook graph.URN // set when Kind == "t_hook"
-	Kind       string    // "reactor" | "t_hook"
+	SourceHook graph.URN // set when Kind == FiringTHook
+	Kind       FiringKind
 }
 
 // Evaluate takes a just-applied rewrite and returns proposed rewrites from:
@@ -73,7 +85,7 @@ func (e *Engine) EvaluateDetailed(rewrite graph.PersistedRewrite) []Firing {
 		}
 		proposed := e.react(node.URN, affectedURN, affectedTypeID, env.Actor)
 		for _, p := range proposed {
-			firings = append(firings, Firing{Proposal: p, Kind: "reactor"})
+			firings = append(firings, Firing{Proposal: p, Kind: FiringReactor})
 		}
 	}
 
@@ -101,7 +113,7 @@ func (e *Engine) EvaluateDetailed(rewrite graph.PersistedRewrite) []Firing {
 			if err != nil {
 				continue
 			}
-			firings = append(firings, Firing{Proposal: proposal, SourceHook: thook.URN, Kind: "t_hook"})
+			firings = append(firings, Firing{Proposal: proposal, SourceHook: thook.URN, Kind: FiringTHook})
 		}
 	}
 

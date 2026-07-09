@@ -592,10 +592,15 @@ func (rt *Runtime) runReactive(trigger graph.PersistedRewrite) {
 
 	for i, f := range firings {
 		switch f.Kind {
-		case "t_hook":
+		case reactive.FiringTHook:
 			rt.stageEventHookLocked(f, trigger, i)
-		default: // "reactor" — WF17 watcher/reactor chain, unchanged.
+		case reactive.FiringReactor: // WF17 watcher/reactor chain, unchanged.
 			rt.applyReactiveLocked(f.Proposal)
+		default:
+			// Fail-closed: an unknown firing kind must never silently take
+			// the immediate-apply path (Copilot catch, PR #56). Drop it —
+			// a new kind gets an explicit routing decision here first.
+			log.Printf("kernel: runReactive: dropping firing with unknown kind %q (source %s)", f.Kind, f.SourceHook)
 		}
 	}
 }
