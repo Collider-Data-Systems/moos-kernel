@@ -888,14 +888,18 @@ func (rt *Runtime) runHDCIndexAndDriftLocked(trigger graph.Envelope) {
 		}
 
 		linkClaim := graph.Envelope{
-			RewriteType:     graph.LINK,
-			RewriteCategory: graph.WF11,
+			RewriteType: graph.LINK,
+			// Re-home drift annotations to WF15 open-semantic links.
+			// WF11 only declares synced-via/sync-target; the old tagged/tagged-in
+			// pair was rejected by the declaration gate (moos-kernel#52).
+			RewriteCategory: graph.WF15,
 			Actor:           actor,
 			RelationURN:     relURN,
 			SrcURN:          claimURN,
-			SrcPort:         "tagged",
+			SrcPort:         "{semantic}",
 			TgtURN:          row.URN,
-			TgtPort:         "tagged-in",
+			TgtPort:         "{semantic}",
+			ContractURN:     "urn:moos:contract:hdc-drift-annotation.v1",
 		}
 		rt.applyReactiveLocked(linkClaim)
 	}

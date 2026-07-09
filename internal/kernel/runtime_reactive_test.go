@@ -485,12 +485,12 @@ func TestRuntime_HDCDriftEmitsClaimAndAnnotation(t *testing.T) {
 
 	var annotationCount int
 	for _, rel := range rt.state.Relations {
-		if rel.RewriteCategory == graph.WF11 {
+		if rel.RewriteCategory == graph.WF15 && rel.ContractURN == "urn:moos:contract:hdc-drift-annotation.v1" {
 			annotationCount++
 		}
 	}
 	if annotationCount == 0 {
-		t.Fatal("expected at least one WF11 drift annotation relation")
+		t.Fatal("expected at least one WF15 semantic drift annotation relation")
 	}
 
 	expressions = rt.HDCTypeExpressions()
