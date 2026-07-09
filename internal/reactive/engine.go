@@ -19,11 +19,53 @@ type Engine struct {
 	State *graph.GraphState
 }
 
+// FiringKind identifies which evaluation pass produced a Firing. Typed (not
+// free-form strings) so adding a new kind is a compile-time change at every
+// routing switch rather than a silent runtime bypass (Copilot catch, PR #56).
+type FiringKind string
+
+const (
+	// FiringReactor — Pass 1, watcher→reactor chain (WF17).
+	FiringReactor FiringKind = "reactor"
+	// FiringTHook — Pass 2, t_hook owned by the affected node (M6).
+	FiringTHook FiringKind = "t_hook"
+)
+
+// Firing is a proposed rewrite with provenance: which pass produced it and,
+// for t_hook firings, which hook node. The kernel needs the distinction —
+// t_hook (M6 event pathway) firings are STAGED as governance_proposals
+// (issue #53, parity with the TIME sweep), while watcher/reactor firings
+// keep the WF17 immediate-apply path.
+type Firing struct {
+	Proposal   graph.Envelope
+	SourceHook graph.URN // set when Kind == FiringTHook
+	Kind       FiringKind
+}
+
 // Evaluate takes a just-applied rewrite and returns proposed rewrites from:
 //  1. Watcher→Reactor chains (existing WF17 pattern) whose guards all pass.
 //  2. T-hook nodes (M6) owned by the affected node whose event_shape + guard_ref pass.
+//
+// Thin provenance-erasing wrapper over EvaluateDetailed, kept for callers
+// that only need the envelopes.
 func (e *Engine) Evaluate(rewrite graph.PersistedRewrite) []graph.Envelope {
-	var proposals []graph.Envelope
+	firings := e.EvaluateDetailed(rewrite)
+	if len(firings) == 0 {
+		return nil
+	}
+	proposals := make([]graph.Envelope, 0, len(firings))
+	for _, f := range firings {
+		proposals = append(proposals, f.Proposal)
+	}
+	return proposals
+}
+
+// EvaluateDetailed is Evaluate with provenance: each proposal carries which
+// pass produced it ("reactor" | "t_hook") and the source hook URN for
+// t_hook firings, so the kernel can route them to different apply/staging
+// pathways.
+func (e *Engine) EvaluateDetailed(rewrite graph.PersistedRewrite) []Firing {
+	var firings []Firing
 
 	env := rewrite.Envelope
 
@@ -42,7 +84,9 @@ func (e *Engine) Evaluate(rewrite graph.PersistedRewrite) []graph.Envelope {
 			continue
 		}
 		proposed := e.react(node.URN, affectedURN, affectedTypeID, env.Actor)
-		proposals = append(proposals, proposed...)
+		for _, p := range proposed {
+			firings = append(firings, Firing{Proposal: p, Kind: FiringReactor})
+		}
 	}
 
 	// Pass 2: T-hooks owned by the affected node (M6 first-class hooks).
@@ -69,11 +113,11 @@ func (e *Engine) Evaluate(rewrite graph.PersistedRewrite) []graph.Envelope {
 			if err != nil {
 				continue
 			}
-			proposals = append(proposals, proposal)
+			firings = append(firings, Firing{Proposal: proposal, SourceHook: thook.URN, Kind: FiringTHook})
 		}
 	}
 
-	return proposals
+	return firings
 }
 
 // affected extracts the URN and type_id of the node affected by a rewrite.
