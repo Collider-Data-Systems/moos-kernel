@@ -3,6 +3,7 @@ package kernel
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"moos/kernel/internal/hdc"
 	"moos/kernel/internal/operad"
 	"moos/kernel/internal/reactive"
+	"moos/kernel/internal/tday"
 )
 
 const (
@@ -573,38 +575,143 @@ func (rt *Runtime) broadcast(pr graph.PersistedRewrite) {
 }
 
 // runReactive evaluates the Watch/React/Guard engine against a just-applied rewrite
-// and applies any resulting proposals. Called with rt.mu already held.
-// Proposals are applied at depth-1 only — reactive proposals do not trigger further reactions.
+// and routes the resulting firings. Called with rt.mu already held.
+// Proposals are processed at depth-1 only — reactive results do not trigger further reactions.
+//
+// Routing (issue #53, Sam ruling t250-Q4 "govern it — parity with TIME"):
+//   - t_hook firings (M6 event pathway) are STAGED as governance_proposals,
+//     exactly like the time-driven sweep — never applied immediately.
+//   - watcher/reactor firings (WF17 Pass 1) keep the immediate-apply path.
+//     Same F-a class as the pre-#53 t_hook fast path — flagged as follow-up,
+//     out of #53's ruling scope.
 func (rt *Runtime) runReactive(trigger graph.PersistedRewrite) {
 	// Snapshot state at the time of the trigger for engine evaluation.
 	snapshot := rt.state
 	eng := reactive.Engine{State: &snapshot}
-	proposals := eng.Evaluate(trigger)
+	firings := eng.EvaluateDetailed(trigger)
 
-	for _, proposal := range proposals {
-		rt.applyReactiveLocked(proposal)
+	for i, f := range firings {
+		switch f.Kind {
+		case "t_hook":
+			rt.stageEventHookLocked(f, trigger, i)
+		default: // "reactor" — WF17 watcher/reactor chain, unchanged.
+			rt.applyReactiveLocked(f.Proposal)
+		}
 	}
 }
 
-// applyReactiveLocked applies a single envelope while the write lock is already held.
-// Used exclusively for reactive proposals — does NOT trigger further reactive evaluation.
-func (rt *Runtime) applyReactiveLocked(env graph.Envelope) {
-	// Operad validation (registry is read-only, no extra locking needed).
-	if err := rt.validate(env); err != nil {
-		return // drop invalid reactive proposals silently
+// stageEventHookLocked stages a governance_proposal for an event-fired t_hook
+// (M6 pathway) instead of applying its react_template immediately — parity
+// with the TIME sweep (issue #53). Called with rt.mu already held.
+//
+// The staged proposed_envelope is the SUBSTITUTED template (the exact
+// envelope an approver would apply — $matched_urn/$actor already resolved),
+// unlike the sweep's verbatim snapshot: the substitutions only exist on the
+// event pathway. It is stored as a plain map (JSON round-trip of the built
+// envelope), NOT as a typed graph.Envelope — replay deserializes property
+// values to map[string]any, so storing the struct live would make CI-4 hold
+// only up to JSON equivalence instead of Go-value equivalence.
+//
+// Idempotency parity with SweepOnce: only hooks with firing_state ∈
+// {"", "pending"} stage. Event hooks can match many rewrites; without this
+// check every matching trigger would re-stage a duplicate proposal.
+//
+// Gate parity (M8): both staging envelopes are pre-flighted through
+// checkGatesLocked BEFORE either is applied — a gate freezing the hook
+// blocks the entire staging pair fail-closed, exactly like the sweep's
+// all-or-nothing ApplyProgram batch.
+//
+// The two staging envelopes are applied sequentially under the held write
+// lock (the sweep gets ApplyProgram atomicity; this path cannot re-enter
+// ApplyProgram without deadlocking). applyStagedLocked mirrors the sweep's
+// governed-path checks (operad structural validation + fold; NO
+// ValidateMUTATE — ApplyProgram never calls it either, and requiring a
+// rewrite_category here would reject staging for hooks that carry an
+// explicit firing_state, silently defeating the idempotency filter). If the
+// proposal ADD does not land, the MUTATE is skipped and the hook stays
+// pending — the next matching trigger retries.
+//
+// firingIdx discriminates multiple hooks firing on the SAME trigger: two
+// hooks on one owner whose URNs share a final slug segment would otherwise
+// compute identical proposal URNs and the loser would be dropped with no
+// retry clock (the sweep's per-tick -n counter is the same device).
+func (rt *Runtime) stageEventHookLocked(f reactive.Firing, trigger graph.PersistedRewrite, firingIdx int) {
+	hook, ok := rt.state.Nodes[f.SourceHook]
+	if !ok {
+		return
 	}
-	if env.RewriteType == graph.MUTATE && rt.registry != nil {
-		if node, ok := rt.state.Nodes[env.TargetURN]; ok {
-			if err := rt.registry.ValidateMUTATE(env, node); err != nil {
-				return
-			}
+	if fs := firingStateOf(hook); fs != "" && fs != "pending" {
+		return
+	}
+
+	currentT := tday.Now()
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	// URN scheme mirrors the sweep's (kernel.<slug>-t<T>-tick<seq>-n<i>):
+	// evt<seq> is unique per trigger, -n<i> per firing within the trigger.
+	proposalURN := graph.URN(fmt.Sprintf("urn:moos:proposal:kernel.%s-t%d-evt%d-n%d", slugFromURN(hook.URN), currentT, trigger.LogSeq, firingIdx))
+
+	// Normalize the substituted envelope to its JSON map form so the live
+	// property value is Go-value-identical to what replay reconstructs.
+	var proposedEnvelope any
+	if raw, err := json.Marshal(f.Proposal); err == nil {
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err == nil {
+			proposedEnvelope = m
 		}
+	}
+	if proposedEnvelope == nil {
+		return // cannot represent the proposal — stage nothing, hook stays pending
+	}
+
+	pair := stageHookProposalPair(hook, currentT, rt.sweepActorLocked(), proposalURN, nowStr, proposedEnvelope)
+
+	// The firing_state MUTATE is additive on first firing (field absent on
+	// the hook) — fold requires an injected PropertySpec for that. Registry
+	// mode injects the declared t_hook.firing_state spec (same as the
+	// sweep's ApplyProgram path); registry-less mode falls back to the
+	// v3.11-declared shape (mutable, kernel scope) so staging works in
+	// dev/test kernels too. When firing_state is already on the hook the
+	// fold takes the standard MUTATE path and needs no spec.
+	pair[1] = rt.injectPropertySpec(pair[1], hook)
+	if pair[1].PropertySpec == nil {
+		if _, hasProp := hook.Properties["firing_state"]; !hasProp {
+			pair[1].PropertySpec = &graph.Property{Mutability: "mutable", AuthorityScope: "kernel", StratumOrigin: 2}
+		}
+	}
+
+	// M8 gate pre-flight on BOTH envelopes before applying either —
+	// fail-closed parity with the sweep's all-or-nothing batch.
+	if err := rt.checkGatesLocked(pair[0]); err != nil {
+		return
+	}
+	if err := rt.checkGatesLocked(pair[1]); err != nil {
+		return
+	}
+
+	if !rt.applyStagedLocked(pair[0]) {
+		return // proposal ADD did not land — hook stays pending, next trigger retries
+	}
+	rt.applyStagedLocked(pair[1])
+}
+
+// applyStagedLocked applies a kernel-internal STAGING envelope while the
+// write lock is already held. Mirrors the sweep's governed-path checks for
+// its staging pair: operad structural validation + fold + persist. It does
+// NOT call ValidateMUTATE — neither does ApplyProgram (the sweep's path);
+// the staging MUTATE (firing_state) deliberately carries no
+// rewrite_category (see stageHookProposalPair), and ValidateMUTATE's
+// standard path would reject it whenever the hook already carries
+// firing_state, silently defeating the idempotency filter. Gate checks are
+// the caller's responsibility (pre-flighted on the whole pair).
+func (rt *Runtime) applyStagedLocked(env graph.Envelope) bool {
+	if err := rt.validate(env); err != nil {
+		return false
 	}
 
 	now := time.Now().UTC()
 	next, _, err := fold.EvaluateAt(rt.state, env, now)
 	if err != nil {
-		return // skip (e.g. ErrNodeExists for idempotent proposals)
+		return false
 	}
 
 	seq := rt.logSeq.Add(1)
@@ -615,12 +722,53 @@ func (rt *Runtime) applyReactiveLocked(env graph.Envelope) {
 		LogSeq:    seq,
 	}
 	if err := rt.store.Append([]graph.PersistedRewrite{persisted}); err != nil {
-		return // persist failure: drop, don't corrupt in-memory state
+		return false // persist failure: drop, don't corrupt in-memory state
 	}
 
 	rt.state = next
 	rt.log = append(rt.log, persisted)
 	rt.broadcast(persisted)
+	return true
+}
+
+// applyReactiveLocked applies a single envelope while the write lock is already held.
+// Used exclusively for kernel-internal reactive/staging emissions — does NOT trigger
+// further reactive evaluation. Returns true iff the envelope landed (validated,
+// folded, persisted).
+func (rt *Runtime) applyReactiveLocked(env graph.Envelope) bool {
+	// Operad validation (registry is read-only, no extra locking needed).
+	if err := rt.validate(env); err != nil {
+		return false // drop invalid reactive proposals silently
+	}
+	if env.RewriteType == graph.MUTATE && rt.registry != nil {
+		if node, ok := rt.state.Nodes[env.TargetURN]; ok {
+			if err := rt.registry.ValidateMUTATE(env, node); err != nil {
+				return false
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	next, _, err := fold.EvaluateAt(rt.state, env, now)
+	if err != nil {
+		return false // skip (e.g. ErrNodeExists for idempotent proposals)
+	}
+
+	seq := rt.logSeq.Add(1)
+	persisted := graph.PersistedRewrite{
+		Envelope:  env,
+		AppliedAt: now,
+		Timestamp: now,
+		LogSeq:    seq,
+	}
+	if err := rt.store.Append([]graph.PersistedRewrite{persisted}); err != nil {
+		return false // persist failure: drop, don't corrupt in-memory state
+	}
+
+	rt.state = next
+	rt.log = append(rt.log, persisted)
+	rt.broadcast(persisted)
+	return true
 }
 
 // checkGatesLocked evaluates all gate nodes linked to the rewrite's affected

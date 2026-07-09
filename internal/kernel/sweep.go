@@ -137,61 +137,87 @@ func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq
 		emitted++
 		proposalURN := graph.URN(fmt.Sprintf("urn:moos:proposal:kernel.%s-t%d-tick%d-n%d", hookSlug, currentT, baseLogSeq, emitted))
 
-		title := fmt.Sprintf("Fire t_hook %s at T=%d", n.URN, currentT)
-
-		props := map[string]graph.Property{
-			"title":             {Value: title, Mutability: "immutable"},
-			"status":            {Value: "pending", Mutability: "mutable", AuthorityScope: "principal"},
-			"created_at":        {Value: nowStr, Mutability: "immutable"},
-			"source_t_hook_urn": {Value: string(n.URN), Mutability: "immutable"},
-			"fires_at_t":        {Value: currentT, Mutability: "immutable"},
-		}
+		// The sweep stages the hook's react_template VERBATIM — time-fired
+		// hooks carry no event substitutions ($matched_urn etc. only exist
+		// on the event pathway, which passes the substituted envelope).
+		var proposedEnvelope any
 		if p, ok := n.Properties["react_template"]; ok && p.Value != nil {
-			props["proposed_envelope"] = graph.Property{Value: p.Value, Mutability: "immutable"}
+			proposedEnvelope = p.Value
 		}
-		if p, ok := n.Properties["owner_urn"]; ok && p.Value != nil {
-			props["owner_urn"] = graph.Property{Value: p.Value, Mutability: "immutable"}
-		}
-
-		// RewriteCategory is intentionally omitted on both envelopes:
-		//
-		//   - The ADD creates a governance_proposal NODE. Node creation
-		//     is typed by type_id; no WF category applies. (PR #25
-		//     review — Gemini suggested WF13; WF13's allowed_rewrites
-		//     are LINK/UNLINK/MUTATE, not ADD, and WF13 models a
-		//     governance_proposal PROMOTING to a target, not the
-		//     proposal's creation. We don't carry a WF here.)
-		//
-		//   - The MUTATE on firing_state is ALWAYS additive on first
-		//     firing (field absent on the hook → pending → proposed).
-		//     Additive MUTATE validation doesn't require a
-		//     rewrite_category per operad.ValidateMUTATE. For future
-		//     non-additive transitions (approver reactor: proposed →
-		//     applied; reopens_at: applied → pending) a WF category
-		//     will be needed. TODO(WF): either extend WF17 Reactive
-		//     mutate_scope to include firing_state, or introduce a new
-		//     WF21 "Reactive firing lifecycle". Pick when the approver
-		//     reactor PR lands.
-		envelopes = append(envelopes,
-			graph.Envelope{
-				RewriteType: graph.ADD,
-				Actor:       actor,
-				NodeURN:     proposalURN,
-				TypeID:      "governance_proposal",
-				Properties:  props,
-			},
-			graph.Envelope{
-				RewriteType: graph.MUTATE,
-				Actor:       actor,
-				TargetURN:   n.URN,
-				Field:       "firing_state",
-				NewValue:    "proposed",
-			},
-		)
+		pair := stageHookProposalPair(n, currentT, actor, proposalURN, nowStr, proposedEnvelope)
+		envelopes = append(envelopes, pair[0], pair[1])
 		emitted++
 	}
 
 	return envelopes
+}
+
+// stageHookProposalPair builds the atomic two-envelope staging shape for a
+// firing t_hook:
+//
+//	1. ADD    a governance_proposal node (title, status=pending,
+//	          source_t_hook_urn, fires_at_t, proposed_envelope, owner_urn)
+//	2. MUTATE the source hook's firing_state → "proposed"
+//
+// Shared by the TIME sweep (SweepOnce) and the M6 event pathway
+// (Runtime.stageEventHookLocked) — governance parity by construction
+// (issue #53, Sam ruling t250-Q4). proposedEnvelope is what the approver
+// would apply: the sweep passes the hook's raw react_template; the event
+// pathway passes the SUBSTITUTED envelope built by the reactive engine, so
+// the approver sees exactly what will land.
+//
+// RewriteCategory is intentionally omitted on both envelopes:
+//
+//   - The ADD creates a governance_proposal NODE. Node creation
+//     is typed by type_id; no WF category applies. (PR #25
+//     review — Gemini suggested WF13; WF13's allowed_rewrites
+//     are LINK/UNLINK/MUTATE, not ADD, and WF13 models a
+//     governance_proposal PROMOTING to a target, not the
+//     proposal's creation. We don't carry a WF here.)
+//
+//   - The MUTATE on firing_state is ALWAYS additive on first
+//     firing (field absent on the hook → pending → proposed).
+//     Additive MUTATE validation doesn't require a
+//     rewrite_category per operad.ValidateMUTATE. For future
+//     non-additive transitions (approver reactor: proposed →
+//     applied; reopens_at: applied → pending) a WF category
+//     will be needed. TODO(WF): either extend WF17 Reactive
+//     mutate_scope to include firing_state, or introduce a new
+//     WF "Reactive firing lifecycle". Pick when the approver
+//     reactor PR lands.
+func stageHookProposalPair(hook graph.Node, currentT int, actor graph.URN, proposalURN graph.URN, nowStr string, proposedEnvelope any) [2]graph.Envelope {
+	title := fmt.Sprintf("Fire t_hook %s at T=%d", hook.URN, currentT)
+
+	props := map[string]graph.Property{
+		"title":             {Value: title, Mutability: "immutable"},
+		"status":            {Value: "pending", Mutability: "mutable", AuthorityScope: "principal"},
+		"created_at":        {Value: nowStr, Mutability: "immutable"},
+		"source_t_hook_urn": {Value: string(hook.URN), Mutability: "immutable"},
+		"fires_at_t":        {Value: currentT, Mutability: "immutable"},
+	}
+	if proposedEnvelope != nil {
+		props["proposed_envelope"] = graph.Property{Value: proposedEnvelope, Mutability: "immutable"}
+	}
+	if p, ok := hook.Properties["owner_urn"]; ok && p.Value != nil {
+		props["owner_urn"] = graph.Property{Value: p.Value, Mutability: "immutable"}
+	}
+
+	return [2]graph.Envelope{
+		{
+			RewriteType: graph.ADD,
+			Actor:       actor,
+			NodeURN:     proposalURN,
+			TypeID:      "governance_proposal",
+			Properties:  props,
+		},
+		{
+			RewriteType: graph.MUTATE,
+			Actor:       actor,
+			TargetURN:   hook.URN,
+			Field:       "firing_state",
+			NewValue:    "proposed",
+		},
+	}
 }
 
 // firingStateOf reads the t_hook's firing_state property. Returns "" when
