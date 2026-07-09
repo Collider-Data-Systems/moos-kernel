@@ -19,7 +19,11 @@ import (
 	"moos/kernel/internal/reactive"
 )
 
-const subscriberBufferSize = 64
+const (
+	subscriberBufferSize        = 64
+	driftAnnotationSemanticPort = "{semantic}"
+	driftAnnotationContractURN  = graph.URN("urn:moos:contract:hdc-drift-annotation.v1")
+)
 
 // Runtime is the kernel — the effect layer wrapping the pure catamorphism.
 // It holds the current graph state (derived), the append-only log (truth),
@@ -896,10 +900,10 @@ func (rt *Runtime) runHDCIndexAndDriftLocked(trigger graph.Envelope) {
 			Actor:           actor,
 			RelationURN:     relURN,
 			SrcURN:          claimURN,
-			SrcPort:         "{semantic}",
+			SrcPort:         driftAnnotationSemanticPort,
 			TgtURN:          row.URN,
-			TgtPort:         "{semantic}",
-			ContractURN:     "urn:moos:contract:hdc-drift-annotation.v1",
+			TgtPort:         driftAnnotationSemanticPort,
+			ContractURN:     driftAnnotationContractURN,
 		}
 		rt.applyReactiveLocked(linkClaim)
 	}

@@ -485,7 +485,7 @@ func TestRuntime_HDCDriftEmitsClaimAndAnnotation(t *testing.T) {
 
 	var annotationCount int
 	for _, rel := range rt.state.Relations {
-		if rel.RewriteCategory == graph.WF15 && rel.ContractURN == "urn:moos:contract:hdc-drift-annotation.v1" {
+		if rel.RewriteCategory == graph.WF15 && rel.ContractURN == driftAnnotationContractURN {
 			annotationCount++
 		}
 	}
