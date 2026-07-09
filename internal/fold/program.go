@@ -20,12 +20,17 @@ func EvaluateProgram(state graph.GraphState, envelopes []graph.Envelope) (graph.
 // envelope i (node/relation CreatedAt on ADD/LINK). Otherwise wall clock is
 // used for backwards compatibility.
 func EvaluateProgramAt(state graph.GraphState, envelopes []graph.Envelope, appliedAt []time.Time) (graph.GraphState, []graph.EvalResult, error) {
+	if len(appliedAt) != 0 && len(appliedAt) != len(envelopes) {
+		return state, nil, fmt.Errorf("program appliedAt length mismatch: got %d, want 0 or %d", len(appliedAt), len(envelopes))
+	}
+	useAppliedAt := len(appliedAt) == len(envelopes)
+
 	working := state.Clone()
 	results := make([]graph.EvalResult, 0, len(envelopes))
 
 	for i, env := range envelopes {
 		ts := time.Now().UTC()
-		if i < len(appliedAt) {
+		if useAppliedAt {
 			ts = appliedAt[i]
 		}
 		next, result, err := EvaluateAt(working, env, ts)

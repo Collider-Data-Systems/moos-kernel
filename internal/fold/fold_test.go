@@ -245,6 +245,31 @@ func TestProgram_Rollback(t *testing.T) {
 	}
 }
 
+func TestProgramAt_PartialAppliedAtRejected(t *testing.T) {
+	state := graph.NewGraphState()
+
+	envelopes := []graph.Envelope{
+		userNode("urn:moos:user:sam"),
+		{RewriteType: graph.ADD, Actor: "urn:moos:user:sam",
+			NodeURN: "urn:moos:workstation:hp-laptop", TypeID: "workstation",
+			Properties: map[string]graph.Property{"hostname": {Value: "hp-laptop", Mutability: "immutable"}}},
+	}
+
+	next, results, err := fold.EvaluateProgramAt(state, envelopes, []time.Time{time.Now().UTC()})
+	if err == nil {
+		t.Fatal("expected error from partial appliedAt slice")
+	}
+	if results != nil {
+		t.Fatal("expected nil results on appliedAt length mismatch")
+	}
+	if len(state.Nodes) != 0 {
+		t.Error("state was modified despite appliedAt validation failure")
+	}
+	if len(next.Nodes) != 0 {
+		t.Error("returned state has nodes despite appliedAt validation failure")
+	}
+}
+
 func TestReplay(t *testing.T) {
 	// Build a log via Evaluate
 	state := graph.NewGraphState()
