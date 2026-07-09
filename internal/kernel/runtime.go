@@ -216,13 +216,13 @@ func (rt *Runtime) applyWithOptions(env graph.Envelope, opts applyOptions) (grap
 		return graph.EvalResult{}, err
 	}
 
-	next, result, err := fold.Evaluate(rt.state, env)
+	now := time.Now().UTC()
+	next, result, err := fold.EvaluateAt(rt.state, env, now)
 	if err != nil {
 		return graph.EvalResult{}, err
 	}
 
 	seq := rt.logSeq.Add(1)
-	now := time.Now().UTC()
 	persisted := graph.PersistedRewrite{
 		Envelope:  env,
 		AppliedAt: now,
@@ -292,6 +292,11 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 	// an index of guarded nodes so we can skip the inner scan when no gates
 	// touch the target set (PR #8 review, Gemini).
 	injected := make([]graph.Envelope, len(envelopes))
+	baseNow := time.Now().UTC()
+	appliedAt := make([]time.Time, len(envelopes))
+	for i := range envelopes {
+		appliedAt[i] = baseNow.Add(time.Duration(i) * time.Nanosecond)
+	}
 	workingState := rt.state.Clone()
 	for i, env := range envelopes {
 		if env.RewriteType == graph.MUTATE && rt.registry != nil {
@@ -331,7 +336,7 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 		// Advance the working state by applying this envelope before
 		// validating the next one. On failure bail early — ApplyProgram
 		// is all-or-nothing so a later error still rolls back cleanly.
-		next, _, err := fold.Evaluate(workingState, env)
+		next, _, err := fold.EvaluateAt(workingState, env, appliedAt[i])
 		if err != nil {
 			return nil, err
 		}
@@ -339,16 +344,15 @@ func (rt *Runtime) ApplyProgram(envelopes []graph.Envelope) ([]graph.EvalResult,
 	}
 	envelopes = injected
 
-	nextState, results, err := fold.EvaluateProgram(rt.state, envelopes)
+	nextState, results, err := fold.EvaluateProgramAt(rt.state, envelopes, appliedAt)
 	if err != nil {
 		return nil, err
 	}
 
-	now := time.Now().UTC()
 	persisted := make([]graph.PersistedRewrite, len(envelopes))
 	for i, env := range envelopes {
 		seq := rt.logSeq.Add(1)
-		ts := now.Add(time.Duration(i) * time.Nanosecond)
+		ts := appliedAt[i]
 		persisted[i] = graph.PersistedRewrite{
 			Envelope:  env,
 			AppliedAt: ts,
@@ -593,13 +597,13 @@ func (rt *Runtime) applyReactiveLocked(env graph.Envelope) {
 		}
 	}
 
-	next, _, err := fold.Evaluate(rt.state, env)
+	now := time.Now().UTC()
+	next, _, err := fold.EvaluateAt(rt.state, env, now)
 	if err != nil {
 		return // skip (e.g. ErrNodeExists for idempotent proposals)
 	}
 
 	seq := rt.logSeq.Add(1)
-	now := time.Now().UTC()
 	persisted := graph.PersistedRewrite{
 		Envelope:  env,
 		AppliedAt: now,
@@ -739,13 +743,13 @@ func (rt *Runtime) bumpSessionLocalT(sessionURN graph.URN) {
 	// Inject PropertySpec for additive MUTATE (local_t may not be on node yet).
 	mutEnv = rt.injectPropertySpec(mutEnv, actorNode)
 
-	next, _, err := fold.Evaluate(rt.state, mutEnv)
+	now := time.Now().UTC()
+	next, _, err := fold.EvaluateAt(rt.state, mutEnv, now)
 	if err != nil {
 		return // local_t not declared in ontology or other structural issue — skip
 	}
 
 	seq := rt.logSeq.Add(1)
-	now := time.Now().UTC()
 	persisted := graph.PersistedRewrite{
 		Envelope:  mutEnv,
 		AppliedAt: now,

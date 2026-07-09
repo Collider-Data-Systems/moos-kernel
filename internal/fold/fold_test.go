@@ -2,6 +2,7 @@ package fold_test
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -305,7 +306,8 @@ func TestCI3_IdentityStability(t *testing.T) {
 // TestCI4_ReplayDeterminism verifies same log → same state always.
 func TestCI4_ReplayDeterminism(t *testing.T) {
 	env := userNode("urn:moos:user:sam")
-	log := []graph.PersistedRewrite{{Envelope: env, AppliedAt: time.Now().UTC(), LogSeq: 1}}
+	appliedAt := time.Date(2026, time.July, 9, 10, 40, 0, 123, time.UTC)
+	log := []graph.PersistedRewrite{{Envelope: env, AppliedAt: appliedAt, LogSeq: 1}}
 
 	s1, err1 := fold.Replay(log)
 	s2, err2 := fold.Replay(log)
@@ -315,7 +317,25 @@ func TestCI4_ReplayDeterminism(t *testing.T) {
 	}
 	n1 := s1.Nodes["urn:moos:user:sam"]
 	n2 := s2.Nodes["urn:moos:user:sam"]
-	if n1.URN != n2.URN || n1.TypeID != n2.TypeID {
+	if !reflect.DeepEqual(n1, n2) {
 		t.Error("CI-4 violated: same log produced different states")
+	}
+	if !n1.CreatedAt.Equal(appliedAt) {
+		t.Fatalf("replay did not preserve applied_at for node created_at: got %s want %s", n1.CreatedAt, appliedAt)
+	}
+}
+
+func TestReplayUsesTimestampFallbackWhenAppliedAtMissing(t *testing.T) {
+	env := userNode("urn:moos:user:legacy")
+	ts := time.Date(2026, time.April, 10, 9, 30, 0, 0, time.UTC)
+	log := []graph.PersistedRewrite{{Envelope: env, Timestamp: ts, LogSeq: 1}}
+
+	s, err := fold.Replay(log)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	n := s.Nodes["urn:moos:user:legacy"]
+	if !n.CreatedAt.Equal(ts) {
+		t.Fatalf("replay did not fallback to timestamp for node created_at: got %s want %s", n.CreatedAt, ts)
 	}
 }
