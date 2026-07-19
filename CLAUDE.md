@@ -118,6 +118,7 @@ go run ./cmd/moos \
 | `--seed-user` | `sam` | Username for seed node |
 | `--seed-ws` | `hp-laptop` | Workstation name for seed node |
 | `--sweep-interval` | `30s` | T-hook sweep tick (0 disables) |
+| `--auth-token-file` | (none) | Path to a file whose contents are the bearer token required on **mutating + egress** routes (`POST /rewrites`, `/programs`, `/twin/ingest`, the LLM proxy, and the MCP `apply_rewrite`/`apply_program` tools over HTTP). `MOOS_AUTH_TOKEN` env is the fallback. When NEITHER is set the routes are **unauthenticated** (a startup warning logs); read endpoints are always open, and MCP stdio is local-trust (ungated). Writer clients (harness, MCP-over-HTTP) must send `Authorization: Bearer <token>`. |
 | `--quic-addr` | (none) | UDP address for HTTP/3 QUIC listener (M10 reliable mirror); requires `--tls-cert` and `--tls-key` |
 | `--tls-cert` | (none) | TLS certificate (PEM) for QUIC / WebTransport listener |
 | `--tls-key` | (none) | TLS private key (PEM) for QUIC / WebTransport listener |
@@ -171,6 +172,10 @@ Integration test gated behind `MOOS_INTEGRATION=1` (reads sibling `ffs0/kb/super
 Set `env.session_urn` explicitly only when the agent occupies multiple sessions.
 
 ---
+
+## Transport auth (t260 kernel-auth)
+
+Read endpoints are open (observability). **Mutating + egress** routes are wrapped by `writeGate` (`internal/transport/server.go`) and the MCP write-tool gate (`internal/mcp/server.go`): when a bearer token is configured (`--auth-token-file` / `MOOS_AUTH_TOKEN`), those routes require `Authorization: Bearer <token>` and 401 otherwise; the permissive `Access-Control-Allow-Origin: *` is stripped from them regardless (defense-in-depth against drive-by browser writes/egress — CORS is a browser hint, the bearer is the server-side gate). Token unset ⇒ backward-compatible open mode + a startup warning. Chosen model (t260): bearer-on-write, reads-open, lowest blast radius; pair with a non-public bind or reverse proxy for exposed deployments. The token belongs in `ffs0/secrets/` (gitignored) — never in argv or code.
 
 ## Safety
 

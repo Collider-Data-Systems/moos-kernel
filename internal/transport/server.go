@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -40,6 +41,13 @@ type Server struct {
 	// from main.go when --enable-llm-proxy is passed. This is a pure proxy: it
 	// never touches the HG log / fold / any rewrite path.
 	llmProxy *geminiProxy
+
+	// authToken, if non-empty, is the bearer token required on mutating and
+	// egress routes (POST /rewrites, /programs, /twin/ingest, and the LLM
+	// proxy). Empty (the default) means those routes are UNAUTHENTICATED —
+	// backward-compatible, but main.go logs a startup warning. Read endpoints
+	// are always open. Set via SetAuthToken before Handler() is attached.
+	authToken string
 }
 
 // currentTDay is a thin alias over tday.Now so handlers that already
@@ -59,6 +67,42 @@ func NewServer(rt *kernel.Runtime, registry *operad.Registry, _ int) *Server {
 // is attached to an http.Server, or before the first request is served.
 func (s *Server) SetAltSvc(v string) { s.altSvc = v }
 
+// SetAuthToken records the bearer token required on mutating and egress routes
+// (POST /rewrites, /programs, /twin/ingest, and the LLM proxy). An empty string
+// (the default) leaves those routes unauthenticated. Read endpoints are never
+// gated. Call once before Handler() is attached, like SetAltSvc.
+func (s *Server) SetAuthToken(v string) { s.authToken = v }
+
+// writeGate guards mutating and egress routes. It (1) removes the permissive
+// Access-Control-Allow-Origin:* that corsMiddleware sets for reads, so a
+// drive-by browser page cannot script cross-origin writes/egress, and (2) when
+// an auth token is configured, requires a matching "Authorization: Bearer
+// <token>" header, returning 401 otherwise. Non-browser clients (the harness,
+// MCP-over-HTTP, curl) are unaffected by the CORS change and simply send the
+// bearer. When no token is configured the gate only strips CORS — behaviour is
+// otherwise unchanged (backward compatible).
+func (s *Server) writeGate(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Del("Access-Control-Allow-Origin")
+		if s.authToken != "" && !validBearer(r.Header.Get("Authorization"), s.authToken) {
+			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// validBearer reports whether the Authorization header carries the expected
+// token. The comparison is constant-time to avoid leaking the token via timing.
+func validBearer(header, token string) bool {
+	const prefix = "Bearer "
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return false
+	}
+	got := strings.TrimSpace(header[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+}
+
 // EnableLLMProxy registers the flag-gated read-only Gemini LLM proxy endpoint.
 // Call it BEFORE Handler() so the route is included in the mux. project /
 // secretName select the GCP Secret Manager secret holding the Gemini API key;
@@ -74,16 +118,19 @@ func (s *Server) EnableLLMProxy(project, secretName, defaultModel string) {
 // (set by SetAltSvc once the QUIC listener's actual port is known), so
 // we never advertise an HTTP/3 endpoint that doesn't exist.
 //
-// SECURITY NOTE (PR #8 review): Allow-Origin: * is intentional for local
-// dev / LAN deployments where any browser page needs to reach the kernel
-// during exploration. For production deployments that expose the kernel
-// beyond the host, wrap with a stricter CORS policy or set up an
-// authenticating reverse proxy.
+// SECURITY NOTE (t260 kernel-auth): Allow-Origin: * is applied to READ
+// endpoints so any browser page can observe the kernel during exploration.
+// Mutating and egress routes are wrapped by writeGate, which strips this
+// permissive header and (when a token is configured) enforces a bearer, so
+// those routes are not script-reachable cross-origin. For deployments that
+// expose the kernel beyond the host, also bind a non-public interface or an
+// authenticating reverse proxy — CORS is a browser hint, the bearer is the
+// server-side gate.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if s.altSvc != "" {
 			w.Header().Set("Alt-Svc", s.altSvc)
 		}
@@ -112,8 +159,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /fold", s.handleGetFold)
 	mux.HandleFunc("GET /fold/stream", s.handleFoldStream)
 
-	mux.HandleFunc("POST /rewrites", s.handlePostRewrite)
-	mux.HandleFunc("POST /programs", s.handlePostProgram)
+	mux.HandleFunc("POST /rewrites", s.writeGate(s.handlePostRewrite))
+	mux.HandleFunc("POST /programs", s.writeGate(s.handlePostProgram))
 
 	mux.HandleFunc("GET /operad/node-types", s.handleGetNodeTypes)
 	mux.HandleFunc("GET /operad/rewrite-categories", s.handleGetRewriteCategories)
@@ -133,8 +180,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /hdc/crosswalk/suggestions", s.handleGetHDCCrosswalkSuggestions)
 	mux.HandleFunc("GET /hdc/classification-space", s.handleGetHDCClassificationSpace)
 
-	// Twin-kernel endpoints (M9 — adjoint sync protocol)
-	mux.HandleFunc("POST /twin/ingest", s.handleTwinIngest)
+	// Twin-kernel endpoints (M9 — adjoint sync protocol). /twin/ingest writes
+	// into the receiving kernel's log, so it is gated with the write routes.
+	mux.HandleFunc("POST /twin/ingest", s.writeGate(s.handleTwinIngest))
 	mux.HandleFunc("GET /twin/status", s.handleTwinStatus)
 
 	// T-hook introspection (§M14 — predicate evaluator endpoints)
@@ -149,7 +197,7 @@ func (s *Server) Handler() http.Handler {
 	// Pure proxy — no HG/log/fold interaction. CORS + OPTIONS preflight are
 	// inherited from corsMiddleware, mirroring /fold.
 	if s.llmProxy != nil {
-		mux.HandleFunc("POST /llm/gemini/chat/completions", s.llmProxy.handleChatCompletions)
+		mux.HandleFunc("POST /llm/gemini/chat/completions", s.writeGate(s.llmProxy.handleChatCompletions))
 	}
 
 	return s.corsMiddleware(mux)

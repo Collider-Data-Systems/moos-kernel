@@ -227,9 +227,12 @@ func TestLLMProxyRoutePresentWhenEnabled(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 routed through mux; body=%s", rr.Code, rr.Body.String())
 	}
-	// CORS header from corsMiddleware must be present (mirrors /fold).
-	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	// t260 kernel-auth: the LLM proxy is an EGRESS route, so writeGate strips
+	// the permissive Allow-Origin:* — a drive-by page must not be able to read
+	// a cross-origin egress response. (When a token is configured the same gate
+	// also 401s unauthenticated callers; here no token is set.)
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty (stripped on egress route)", got)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,7 +51,25 @@ func main() {
 		"Secret Manager secret name for the Gemini API key (used only with --enable-llm-proxy)")
 	geminiModel := flag.String("gemini-model", "",
 		"default Gemini model to inject when a proxied request omits one (empty = pure passthrough)")
+	authTokenFile := flag.String("auth-token-file", "",
+		"path to a file whose contents are the bearer token required on mutating + egress routes "+
+			"(POST /rewrites, /programs, /twin/ingest, the LLM proxy, and the MCP apply_rewrite/apply_program tools). "+
+			"MOOS_AUTH_TOKEN env is used as a fallback when this is empty. When NEITHER is set, those routes are "+
+			"UNAUTHENTICATED (a startup warning is logged); read endpoints are always open.")
 	flag.Parse()
+
+	// --- Resolve the bearer token (file wins over env) ---
+	authToken := strings.TrimSpace(os.Getenv("MOOS_AUTH_TOKEN"))
+	if *authTokenFile != "" {
+		raw, err := os.ReadFile(*authTokenFile)
+		if err != nil {
+			log.Fatalf("auth-token-file: %v", err)
+		}
+		authToken = strings.TrimSpace(string(raw))
+		if authToken == "" {
+			log.Fatalf("auth-token-file %s is empty", *authTokenFile)
+		}
+	}
 
 	// --- Load registry ---
 	registry, err := operad.LoadRegistry(*ontologyPath)
@@ -117,6 +136,14 @@ func main() {
 
 	// --- Start HTTP transport ---
 	tSrv := transport.NewServer(rt, registry, tday.Now())
+	// Bearer gate on mutating + egress routes (t260 kernel-auth). Must be set
+	// before Handler() so the wrapped routes see the token. Reads stay open.
+	if authToken != "" {
+		tSrv.SetAuthToken(authToken)
+		log.Printf("auth: bearer REQUIRED on write+egress routes (POST /rewrites, /programs, /twin/ingest, /llm/*) and MCP apply tools")
+	} else {
+		log.Printf("auth: WARNING — no --auth-token-file / MOOS_AUTH_TOKEN set; write+egress routes are UNAUTHENTICATED (reads are always open)")
+	}
 	// Flag-gated, read-only Gemini LLM proxy. OFF by default. Must be enabled
 	// BEFORE Handler() is attached below so the route is registered. This adds
 	// external egress FROM the sovereign kernel to generativelanguage.googleapis.com;
@@ -141,6 +168,9 @@ func main() {
 
 	// --- Start MCP server ---
 	mcpSrv := mcp.NewServer(rt)
+	if authToken != "" {
+		mcpSrv.SetAuthToken(authToken)
+	}
 	mcpHTTP := &http.Server{
 		Addr:    *mcpAddr,
 		Handler: mcpSrv.Handler(),
