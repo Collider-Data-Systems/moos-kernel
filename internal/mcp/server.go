@@ -3,10 +3,12 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +26,13 @@ type Server struct {
 	write    kernel.WriteKernel
 	mu       sync.Mutex
 	sessions map[string]chan []byte // sessionId → SSE write channel
+
+	// authToken, if non-empty, is the bearer token required to call the write
+	// tools (apply_rewrite, apply_program) over the HTTP-facing MCP transports
+	// (POST /message, POST /sse). Empty (the default) leaves them
+	// unauthenticated. Read tools are never gated, and the stdio transport is
+	// treated as local-trust (a subprocess the operator launched — no header).
+	authToken string
 }
 
 func NewServer(rt *kernel.Runtime) *Server {
@@ -32,6 +41,36 @@ func NewServer(rt *kernel.Runtime) *Server {
 		write:    rt,
 		sessions: make(map[string]chan []byte),
 	}
+}
+
+// SetAuthToken records the bearer token required for the MCP write tools over
+// HTTP transports. Empty (default) leaves them unauthenticated. Call before
+// Handler() is attached.
+func (s *Server) SetAuthToken(v string) { s.authToken = v }
+
+// isWriteCall reports whether a request is a tools/call for a mutating tool
+// (apply_rewrite / apply_program) — the calls that must carry a bearer when a
+// token is configured. Read tools and non-tools methods return false.
+func (s *Server) isWriteCall(req Request) bool {
+	if req.Method != "tools/call" {
+		return false
+	}
+	var params ToolCallParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return false
+	}
+	return params.Name == "apply_rewrite" || params.Name == "apply_program"
+}
+
+// validBearer reports whether the Authorization header carries the expected
+// token, using a constant-time comparison.
+func validBearer(header, token string) bool {
+	const prefix = "Bearer "
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return false
+	}
+	got := strings.TrimSpace(header[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
 }
 
 func (s *Server) Handler() http.Handler {
@@ -104,6 +143,14 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.authToken != "" && s.isWriteCall(req) && !validBearer(r.Header.Get("Authorization"), s.authToken) {
+		data, _ := json.Marshal(errResponse(req.ID, RPCInvalidRequest, "unauthorized: bearer token required for write tools"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write(data)
+		return
+	}
+
 	resp := s.dispatch(req)
 	data, _ := json.Marshal(resp)
 
@@ -135,6 +182,13 @@ func (s *Server) handleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	// Notifications (no id) — acknowledge without a body.
 	if req.ID == nil {
 		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if s.authToken != "" && s.isWriteCall(req) && !validBearer(r.Header.Get("Authorization"), s.authToken) {
+		data, _ := json.Marshal(errResponse(req.ID, RPCInvalidRequest, "unauthorized: bearer token required for write tools"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write(data)
 		return
 	}
 	resp := s.dispatch(req)
