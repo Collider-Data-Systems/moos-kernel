@@ -119,9 +119,8 @@ go run ./cmd/moos \
 | `--seed-ws` | `hp-laptop` | Workstation name for seed node |
 | `--sweep-interval` | `30s` | T-hook sweep tick (0 disables) |
 | `--quic-addr` | (none) | UDP address for HTTP/3 QUIC listener (M10 reliable mirror); requires `--tls-cert` and `--tls-key` |
-| `--tls-cert` | (none) | TLS certificate (PEM) for QUIC / WebTransport listener |
-| `--tls-key` | (none) | TLS private key (PEM) for QUIC / WebTransport listener |
-| `--wt-addr` | (none) | **P9 SPIKE** (feat/webtransport): UDP address for the SYNTHETIC WebTransport/HTTP-3 datagram listener (e.g. `:8443`). Empty ⇒ not started. Off by default; touches no HG state; separate from `--quic-addr`. Reuses `--tls-cert`/`--tls-key` if given, else mints an ephemeral in-memory localhost cert. See `docs/spike-p9-webtransport.md`. |
+| `--tls-cert` | (none) | TLS certificate (PEM) for QUIC listener |
+| `--tls-key` | (none) | TLS private key (PEM) for QUIC listener |
 
 ---
 
@@ -148,7 +147,7 @@ Integration test gated behind `MOOS_INTEGRATION=1` (reads sibling `ffs0/kb/super
 
 ## Development Conventions
 
-- **No external dependencies** beyond quic-go (required for `--quic-addr`) and — on the `feat/webtransport` spike branch only — its sibling `webtransport-go` (required for the off-by-default `--wt-addr` P9 spike; pins the same quic-go v0.59.0, no bump). Stdlib-first; stdlib-only except the quic-go family.
+- **No external dependencies** beyond quic-go (required for `--quic-addr`, the M10 HTTP/3 reliable mirror). Stdlib-first; stdlib-only except the quic-go family. (The P9 WebTransport spike + its `webtransport-go` dep were reverted off master at T=260 — see `docs/spike-p9-webtransport.md`; the spike is preserved in git history / the `feat/webtransport` branch.)
 - **Layer discipline**: `graph` has no IO; `fold` is pure; only `kernel` has effects.
 - **Immutability**: `Registry` is read-only after load. `GraphState` is replaced on each rewrite, never mutated in place.
 - **Operad validation before fold**: `operad` validates type/port/authority; `fold` enforces structural invariants and maintains indexes.

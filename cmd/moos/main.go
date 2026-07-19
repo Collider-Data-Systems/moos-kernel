@@ -35,11 +35,6 @@ func main() {
 	quicAddr := flag.String("quic-addr", "", "UDP address for HTTP/3 QUIC listener (e.g. :4433). Requires --tls-cert and --tls-key.")
 	tlsCert := flag.String("tls-cert", "", "Path to TLS certificate file (PEM) for QUIC listener")
 	tlsKey := flag.String("tls-key", "", "Path to TLS private key file (PEM) for QUIC listener")
-	wtAddr := flag.String("wt-addr", "",
-		"P9 SPIKE: UDP address for the SYNTHETIC WebTransport/HTTP-3 datagram listener (e.g. :8443). "+
-			"EMPTY (default) = NOT started, reliable paths only. Feature-flagged spike: emits a synthetic ~20 Hz "+
-			"datagram stream on /wt/presence; touches NO HG state. Reuses --tls-cert/--tls-key if given, else "+
-			"generates an ephemeral in-memory localhost cert. Separate from the M10 --quic-addr HTTP/3 mirror.")
 	sweepInterval := flag.Duration("sweep-interval", 30*time.Second,
 		"t_hook sweep tick interval (0 disables; default 30s). Each tick evaluates all pending t_hooks and emits a governance_proposal per firing.")
 	enableLLMProxy := flag.Bool("enable-llm-proxy", false,
@@ -175,27 +170,6 @@ func main() {
 		// when running on non-default ports (PR #8 review, Copilot+Gemini).
 		tSrv.SetAltSvc(fmt.Sprintf(`h3=%q; ma=2592000`, *quicAddr))
 		go tSrv.ServeQUIC(*quicAddr, *tlsCert, *tlsKey)
-	}
-
-	// --- P9 SPIKE: SYNTHETIC WebTransport/HTTP-3 datagram data-plane ---
-	// Feature-flagged, OFF by default. Started ONLY when --wt-addr is set; the
-	// reliable :8000/:8080 paths and the M10 --quic-addr HTTP/3 mirror are
-	// untouched. This listener touches NO HG state — it just emits a synthetic
-	// ~20 Hz datagram stream to exercise/prove the lossy pipe. Phase-5 shows the
-	// reliable path already suffices (~61 Hz p95); re-measure before adoption.
-	// It reuses --tls-cert/--tls-key when provided, otherwise mints an ephemeral
-	// in-memory self-signed localhost cert (no key ever written to disk).
-	if *wtAddr != "" {
-		tlsConf, err := transport.DevTLSConfig(*tlsCert, *tlsKey)
-		if err != nil {
-			log.Printf("wt-spike: %v (listener not started)", err)
-		} else {
-			go func() {
-				if err := tSrv.ServeWebTransport(*wtAddr, tlsConf); err != nil {
-					log.Printf("wt-spike: %v", err)
-				}
-			}()
-		}
 	}
 
 	// --- Start time-driven t_hook sweep (§M14 hook-predicates, round-9 M2) ---

@@ -1,6 +1,16 @@
 # P9 SPIKE — WebTransport / HTTP-3 datagram data-plane
 
-**Status:** spike. Feature-flagged, **OFF by default**, synthetic. Not a surface.
+> **REVERTED off `master` at T=260.** The spike (PR #59) shipped its
+> `webtransport-go` dependency + ~250 LOC into the sovereign binary while its
+> own measurement (below) showed it unjustified — the reliable path already
+> suffices (~61 Hz p95, Phase-5 gate stands). Per the T=260 hardening review the
+> code (`webtransport.go`, `devcert.go`, `webtransport_test.go`, the `--wt-addr`
+> flag) and the dep were removed to restore the "stdlib + quic-go family only"
+> invariant. This doc is retained as the record; the code lives in git history
+> and on the `feat/webtransport` branch. Re-land only behind a real high-rate
+> producer and a re-measurement that beats the reliable baseline.
+
+**Status:** spike, reverted off master. Feature-flagged, **OFF by default**, synthetic. Not a surface.
 **Branch:** `feat/webtransport`.
 
 ## Why this exists (and why it is NOT justified as a real surface)
