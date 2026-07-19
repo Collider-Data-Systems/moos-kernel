@@ -37,6 +37,14 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "Path to TLS private key file (PEM) for QUIC listener")
 	sweepInterval := flag.Duration("sweep-interval", 30*time.Second,
 		"t_hook sweep tick interval (0 disables; default 30s). Each tick evaluates all pending t_hooks and emits a governance_proposal per firing.")
+	enableLLMProxy := flag.Bool("enable-llm-proxy", false,
+		"register the read-only Gemini LLM proxy endpoint (POST /llm/gemini/chat/completions). OFF by default — opt-in only. Pure proxy: never touches the HG log/fold. Reads the Gemini API key from GCP Secret Manager via the gcloud CLI (ADC); the key never leaves the kernel and is never logged.")
+	geminiSecretProject := flag.String("gemini-secret-project", "mailmind-ai-djbuw",
+		"GCP project holding the Gemini API key secret (used only with --enable-llm-proxy)")
+	geminiSecretName := flag.String("gemini-secret-name", "gemini-api-key",
+		"Secret Manager secret name for the Gemini API key (used only with --enable-llm-proxy)")
+	geminiModel := flag.String("gemini-model", "",
+		"default Gemini model to inject when a proxied request omits one (empty = pure passthrough)")
 	flag.Parse()
 
 	// --- Load registry ---
@@ -104,6 +112,15 @@ func main() {
 
 	// --- Start HTTP transport ---
 	tSrv := transport.NewServer(rt, registry, tday.Now())
+	// Flag-gated, read-only Gemini LLM proxy. OFF by default. Must be enabled
+	// BEFORE Handler() is attached below so the route is registered. This adds
+	// external egress FROM the sovereign kernel to generativelanguage.googleapis.com;
+	// the endpoint is a pure proxy and never touches the HG log/fold.
+	if *enableLLMProxy {
+		tSrv.EnableLLMProxy(*geminiSecretProject, *geminiSecretName, *geminiModel)
+		log.Printf("llm-proxy: ENABLED — POST %s/llm/gemini/chat/completions (Gemini key via Secret Manager %s/%s; egress → generativelanguage.googleapis.com)",
+			*listenAddr, *geminiSecretProject, *geminiSecretName)
+	}
 	httpSrv := &http.Server{
 		Addr:    *listenAddr,
 		Handler: tSrv.Handler(),

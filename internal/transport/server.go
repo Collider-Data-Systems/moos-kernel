@@ -33,6 +33,13 @@ type Server struct {
 	// QUIC listener's actual UDP port is known. Empty means no Alt-Svc
 	// header — the server is TCP-only and shouldn't advertise h3.
 	altSvc string
+
+	// llmProxy, if non-nil, registers the flag-gated read-only Gemini LLM
+	// proxy endpoint (POST /llm/gemini/chat/completions). Nil (the default)
+	// means the endpoint is NOT registered — it 404s. Set via EnableLLMProxy
+	// from main.go when --enable-llm-proxy is passed. This is a pure proxy: it
+	// never touches the HG log / fold / any rewrite path.
+	llmProxy *geminiProxy
 }
 
 // currentTDay is a thin alias over tday.Now so handlers that already
@@ -51,6 +58,16 @@ func NewServer(rt *kernel.Runtime, registry *operad.Registry, _ int) *Server {
 // This is not concurrency-safe post-startup: call it once before Handler()
 // is attached to an http.Server, or before the first request is served.
 func (s *Server) SetAltSvc(v string) { s.altSvc = v }
+
+// EnableLLMProxy registers the flag-gated read-only Gemini LLM proxy endpoint.
+// Call it BEFORE Handler() so the route is included in the mux. project /
+// secretName select the GCP Secret Manager secret holding the Gemini API key;
+// defaultModel (may be "") is injected only when a proxied request omits one.
+//
+// Like SetAltSvc, call this once before Handler() is attached.
+func (s *Server) EnableLLMProxy(project, secretName, defaultModel string) {
+	s.llmProxy = newGeminiProxy(project, secretName, defaultModel)
+}
 
 // corsMiddleware adds CORS headers to every response and handles OPTIONS
 // preflight. The Alt-Svc header is only emitted when s.altSvc is non-empty
@@ -126,6 +143,14 @@ func (s *Server) Handler() http.Handler {
 
 	// T-cone projection (§M15 — occupant's view of nodes with open hooks)
 	mux.HandleFunc("GET /t-cone", s.handleGetTCone)
+
+	// LLM proxy (flag-gated, read-only). Registered only when EnableLLMProxy
+	// was called (--enable-llm-proxy); otherwise the route is absent and 404s.
+	// Pure proxy — no HG/log/fold interaction. CORS + OPTIONS preflight are
+	// inherited from corsMiddleware, mirroring /fold.
+	if s.llmProxy != nil {
+		mux.HandleFunc("POST /llm/gemini/chat/completions", s.llmProxy.handleChatCompletions)
+	}
 
 	return s.corsMiddleware(mux)
 }
