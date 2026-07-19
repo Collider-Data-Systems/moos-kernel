@@ -188,13 +188,14 @@ func main() {
 	if *wtAddr != "" {
 		tlsConf, err := transport.DevTLSConfig(*tlsCert, *tlsKey)
 		if err != nil {
-			log.Fatalf("wt-spike: %v", err)
+			log.Printf("wt-spike: %v (listener not started)", err)
+		} else {
+			go func() {
+				if err := tSrv.ServeWebTransport(*wtAddr, tlsConf); err != nil {
+					log.Printf("wt-spike: %v", err)
+				}
+			}()
 		}
-		go func() {
-			if err := tSrv.ServeWebTransport(*wtAddr, tlsConf); err != nil {
-				log.Printf("wt-spike: %v", err)
-			}
-		}()
 	}
 
 	// --- Start time-driven t_hook sweep (§M14 hook-predicates, round-9 M2) ---
