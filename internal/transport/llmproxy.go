@@ -165,9 +165,13 @@ func (p *geminiProxy) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxProxyBody))
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxProxyBody)+1))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	if int64(len(body)) > int64(maxProxyBody) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
 	body = p.applyDefaultModel(body)
