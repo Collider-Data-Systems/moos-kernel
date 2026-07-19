@@ -1,0 +1,31 @@
+name: go-ci
+
+# t260: minimal build/vet/test gate on the sovereign runtime. Before this, no
+# workflow ran `go build`/`go vet`/`go test` — the "verified green" line on
+# feature PRs was a manual assertion. This makes it a required, machine-checked
+# gate on every PR to master and every push.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build-vet-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test ./...
