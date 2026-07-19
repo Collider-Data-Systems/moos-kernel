@@ -89,11 +89,28 @@ func buildWebTransportServer(addr string, tlsConf *tls.Config) *webtransport.Ser
 
 	wtSrv := &webtransport.Server{
 		H3: h3,
-		// Dev/localhost synthetic spike: accept any origin. This listener has
-		// no HG reach and emits only fabricated data, so CSRF-style origin
-		// pinning is not meaningful here; the reliable paths keep their own
-		// policy. Tighten this before any non-dev use.
-		CheckOrigin: func(*http.Request) bool { return true },
+		// Dev/localhost synthetic spike: accept only same-origin browser sessions.
+		// This endpoint has no HG reach, but allowing arbitrary origins can let any
+		// web page connect to an operator-exposed port. Non-browser clients may omit
+		// the Origin header; those are allowed.
+		CheckOrigin: func(r *http.Request) bool {
+			o := r.Header.Get("Origin")
+			if o == "" {
+				return true
+			}
+			const scheme = "https://"
+			if len(o) < len(scheme) || o[:len(scheme)] != scheme {
+				return false
+			}
+			host := o[len(scheme):]
+			for i := 0; i < len(host); i++ {
+				if host[i] == '/' {
+					host = host[:i]
+					break
+				}
+			}
+			return host == r.Host
+		},
 	}
 
 	mux := http.NewServeMux()
