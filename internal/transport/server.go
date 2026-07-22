@@ -74,16 +74,20 @@ func NewServer(rt *kernel.Runtime, registry *operad.Registry, _ int) *Server {
 // is attached to an http.Server, or before the first request is served.
 func (s *Server) SetAltSvc(v string) { s.altSvc = v }
 
-// SetAuthToken records the bearer token required on mutating and egress routes
-// (POST /rewrites, /programs, /twin/ingest, and the LLM proxy). An empty string
-// (the default) leaves those routes unauthenticated. Read endpoints are never
-// gated. Call once before Handler() is attached, like SetAltSvc.
+// SetAuthToken records the bearer token required on the mutating routes
+// (POST /rewrites, /programs, /twin/ingest). The /llm/* egress routes accept
+// it too, but they are gated by llmGate: when a scope-split llmToken is also
+// configured, EITHER token passes there — the write token is not *required*
+// on /llm/*. An empty string (the default) leaves the mutating routes
+// unauthenticated. Read endpoints are never gated. Call once before Handler()
+// is attached, like SetAltSvc.
 func (s *Server) SetAuthToken(v string) { s.authToken = v }
 
-// SetLLMToken records the scope-split bearer accepted only on /llm/* routes
-// (in addition to the write token, which always works there). An empty string
-// (the default) means /llm/* is gated by the write token alone. Call once
-// before Handler() is attached, like SetAuthToken.
+// SetLLMToken records the scope-split bearer accepted only on /llm/* routes,
+// alongside the write token (which always works there too). Gating on /llm/*
+// is active when EITHER token is configured; with both empty the routes stay
+// in backward-compatible open mode, same as the write routes. This token
+// never opens a mutating route. Call once before Handler() is attached.
 func (s *Server) SetLLMToken(v string) { s.llmToken = v }
 
 // writeGate guards mutating and egress routes. It (1) removes the permissive

@@ -157,7 +157,14 @@ func main() {
 	}
 	if llmToken != "" {
 		tSrv.SetLLMToken(llmToken)
-		log.Printf("auth: scope-split LLM bearer configured — /llm/* accepts it OR the write token; mutating routes accept the write token only")
+		switch {
+		case !*enableLLMProxy:
+			log.Printf("auth: scope-split LLM bearer configured but --enable-llm-proxy is OFF — no /llm/* route is registered; the token is inert until the proxy is enabled")
+		case authToken != "":
+			log.Printf("auth: scope-split LLM bearer configured — /llm/* accepts it OR the write token; mutating routes accept the write token only")
+		default:
+			log.Printf("auth: scope-split LLM bearer configured — /llm/* requires it; mutating routes remain UNAUTHENTICATED (no write token set)")
+		}
 	}
 	// Flag-gated, read-only Gemini LLM proxy. OFF by default. Must be enabled
 	// BEFORE Handler() is attached below so the route is registered. This adds
