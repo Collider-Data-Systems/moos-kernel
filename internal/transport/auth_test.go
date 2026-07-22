@@ -84,3 +84,72 @@ func TestWriteGate_NoTokenConfigured(t *testing.T) {
 		t.Errorf("Access-Control-Allow-Origin should be stripped on writes even without a token: %q", got)
 	}
 }
+
+// TestLLMGate covers the scope-split matrix (t263): /llm/* accepts EITHER the
+// write token OR the llm token; gating is active when at least one is set; the
+// llm token must NEVER be accepted by writeGate (that is the whole point of
+// the split).
+func TestLLMGate(t *testing.T) {
+	cases := []struct {
+		name      string
+		authToken string
+		llmToken  string
+		header    string
+		wantPass  bool
+	}{
+		{"both empty: open", "", "", "", true},
+		{"write token only: write token passes", "w-tok", "", "Bearer w-tok", true},
+		{"write token only: no header 401", "w-tok", "", "", false},
+		{"llm token only: llm token passes", "", "l-tok", "Bearer l-tok", true},
+		{"llm token only: no header 401", "", "l-tok", "", false},
+		{"both set: write token passes", "w-tok", "l-tok", "Bearer w-tok", true},
+		{"both set: llm token passes", "w-tok", "l-tok", "Bearer l-tok", true},
+		{"both set: wrong token 401", "w-tok", "l-tok", "Bearer nope", false},
+		{"both set: no header 401", "w-tok", "l-tok", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := &Server{authToken: c.authToken, llmToken: c.llmToken}
+			var called bool
+			h := s.llmGate(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			})
+			rr := httptest.NewRecorder()
+			rr.Header().Set("Access-Control-Allow-Origin", "*")
+			req := httptest.NewRequest(http.MethodPost, "/llm/gemini/chat/completions", nil)
+			if c.header != "" {
+				req.Header.Set("Authorization", c.header)
+			}
+			h(rr, req)
+			if called != c.wantPass {
+				t.Fatalf("handler called = %v, want %v", called, c.wantPass)
+			}
+			if !c.wantPass && rr.Code != http.StatusUnauthorized {
+				t.Fatalf("blocked case: got %d, want 401", rr.Code)
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("CORS wildcard not stripped on /llm/*: %q", got)
+			}
+		})
+	}
+}
+
+// TestWriteGate_RejectsLLMToken: the scope boundary itself — a client holding
+// only the llm token must get 401 on mutating routes.
+func TestWriteGate_RejectsLLMToken(t *testing.T) {
+	s := &Server{authToken: "w-tok", llmToken: "l-tok"}
+	var called bool
+	h := s.writeGate(func(w http.ResponseWriter, r *http.Request) { called = true })
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/rewrites", nil)
+	req.Header.Set("Authorization", "Bearer l-tok")
+	h(rr, req)
+	if called {
+		t.Fatal("llm token must not open a mutating route")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401", rr.Code)
+	}
+}
