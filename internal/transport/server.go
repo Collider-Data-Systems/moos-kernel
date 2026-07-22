@@ -48,6 +48,13 @@ type Server struct {
 	// backward-compatible, but main.go logs a startup warning. Read endpoints
 	// are always open. Set via SetAuthToken before Handler() is attached.
 	authToken string
+
+	// llmToken, if non-empty, is a second bearer accepted ONLY on the /llm/*
+	// egress routes (scope-split, t263): a client holding it can reach the LLM
+	// proxy but NOT the mutating routes, so a leak from a browser-resident
+	// client (the pilot) exposes Gemini egress, never HG writes. The write
+	// token always works on /llm/* too. Set via SetLLMToken before Handler().
+	llmToken string
 }
 
 // currentTDay is a thin alias over tday.Now so handlers that already
@@ -67,11 +74,21 @@ func NewServer(rt *kernel.Runtime, registry *operad.Registry, _ int) *Server {
 // is attached to an http.Server, or before the first request is served.
 func (s *Server) SetAltSvc(v string) { s.altSvc = v }
 
-// SetAuthToken records the bearer token required on mutating and egress routes
-// (POST /rewrites, /programs, /twin/ingest, and the LLM proxy). An empty string
-// (the default) leaves those routes unauthenticated. Read endpoints are never
-// gated. Call once before Handler() is attached, like SetAltSvc.
+// SetAuthToken records the bearer token required on the mutating routes
+// (POST /rewrites, /programs, /twin/ingest). The /llm/* egress routes accept
+// it too, but they are gated by llmGate: when a scope-split llmToken is also
+// configured, EITHER token passes there — the write token is not *required*
+// on /llm/*. An empty string (the default) leaves the mutating routes
+// unauthenticated. Read endpoints are never gated. Call once before Handler()
+// is attached, like SetAltSvc.
 func (s *Server) SetAuthToken(v string) { s.authToken = v }
+
+// SetLLMToken records the scope-split bearer accepted only on /llm/* routes,
+// alongside the write token (which always works there too). Gating on /llm/*
+// is active when EITHER token is configured; with both empty the routes stay
+// in backward-compatible open mode, same as the write routes. This token
+// never opens a mutating route. Call once before Handler() is attached.
+func (s *Server) SetLLMToken(v string) { s.llmToken = v }
 
 // writeGate guards mutating and egress routes. It (1) removes the permissive
 // Access-Control-Allow-Origin:* that corsMiddleware sets for reads, so a
@@ -87,6 +104,27 @@ func (s *Server) writeGate(next http.HandlerFunc) http.HandlerFunc {
 		if s.authToken != "" && !validBearer(r.Header.Get("Authorization"), s.authToken) {
 			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
+		}
+		next(w, r)
+	}
+}
+
+// llmGate guards the /llm/* egress routes. Like writeGate it strips the
+// permissive CORS wildcard; the bearer check accepts EITHER the write token OR
+// the scope-split llmToken. Gating is active when at least one token is
+// configured — so setting only --llm-token-file still closes /llm/* (explicit
+// intent), while the both-empty default stays backward-compatibly open.
+func (s *Server) llmGate(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Del("Access-Control-Allow-Origin")
+		if s.authToken != "" || s.llmToken != "" {
+			header := r.Header.Get("Authorization")
+			okWrite := s.authToken != "" && validBearer(header, s.authToken)
+			okLLM := s.llmToken != "" && validBearer(header, s.llmToken)
+			if !okWrite && !okLLM {
+				writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
+				return
+			}
 		}
 		next(w, r)
 	}
@@ -197,7 +235,7 @@ func (s *Server) Handler() http.Handler {
 	// Pure proxy — no HG/log/fold interaction. CORS + OPTIONS preflight are
 	// inherited from corsMiddleware, mirroring /fold.
 	if s.llmProxy != nil {
-		mux.HandleFunc("POST /llm/gemini/chat/completions", s.writeGate(s.llmProxy.handleChatCompletions))
+		mux.HandleFunc("POST /llm/gemini/chat/completions", s.llmGate(s.llmProxy.handleChatCompletions))
 	}
 
 	return s.corsMiddleware(mux)

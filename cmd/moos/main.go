@@ -51,9 +51,14 @@ func main() {
 			"(POST /rewrites, /programs, /twin/ingest, the LLM proxy, and the MCP apply_rewrite/apply_program tools). "+
 			"MOOS_AUTH_TOKEN env is used as a fallback when this is empty. When NEITHER is set, those routes are "+
 			"UNAUTHENTICATED (a startup warning is logged); read endpoints are always open.")
+	llmTokenFile := flag.String("llm-token-file", "",
+		"path to a file whose contents are a SECOND bearer accepted ONLY on the /llm/* egress routes "+
+			"(scope-split, t263): clients holding it reach the LLM proxy but never the mutating routes. "+
+			"MOOS_LLM_TOKEN env is the fallback. The write token always works on /llm/* too; "+
+			"empty (the default) means /llm/* is gated by the write token alone.")
 	flag.Parse()
 
-	// --- Resolve the bearer token (file wins over env) ---
+	// --- Resolve the bearer tokens (file wins over env) ---
 	authToken := strings.TrimSpace(os.Getenv("MOOS_AUTH_TOKEN"))
 	if *authTokenFile != "" {
 		raw, err := os.ReadFile(*authTokenFile)
@@ -63,6 +68,17 @@ func main() {
 		authToken = strings.TrimSpace(string(raw))
 		if authToken == "" {
 			log.Fatalf("auth-token-file %s is empty", *authTokenFile)
+		}
+	}
+	llmToken := strings.TrimSpace(os.Getenv("MOOS_LLM_TOKEN"))
+	if *llmTokenFile != "" {
+		raw, err := os.ReadFile(*llmTokenFile)
+		if err != nil {
+			log.Fatalf("llm-token-file: %v", err)
+		}
+		llmToken = strings.TrimSpace(string(raw))
+		if llmToken == "" {
+			log.Fatalf("llm-token-file %s is empty", *llmTokenFile)
 		}
 	}
 
@@ -138,6 +154,17 @@ func main() {
 		log.Printf("auth: bearer REQUIRED on write+egress routes (POST /rewrites, /programs, /twin/ingest, /llm/*) and MCP apply tools")
 	} else {
 		log.Printf("auth: WARNING — no --auth-token-file / MOOS_AUTH_TOKEN set; write+egress routes are UNAUTHENTICATED (reads are always open)")
+	}
+	if llmToken != "" {
+		tSrv.SetLLMToken(llmToken)
+		switch {
+		case !*enableLLMProxy:
+			log.Printf("auth: scope-split LLM bearer configured but --enable-llm-proxy is OFF — no /llm/* route is registered; the token is inert until the proxy is enabled")
+		case authToken != "":
+			log.Printf("auth: scope-split LLM bearer configured — /llm/* accepts it OR the write token; mutating routes accept the write token only")
+		default:
+			log.Printf("auth: scope-split LLM bearer configured — /llm/* requires it; mutating routes remain UNAUTHENTICATED (no write token set)")
+		}
 	}
 	// Flag-gated, read-only Gemini LLM proxy. OFF by default. Must be enabled
 	// BEFORE Handler() is attached below so the route is registered. This adds
