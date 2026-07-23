@@ -9,27 +9,28 @@ import (
 )
 
 // Regression coverage for moos-kernel#64 (G5 close-out) — the 4.0.4 WF02
-// member-of pair and the FIRST load-bearing use of the port_color_map override.
-// No behavior change: these pin the enforcement that ffs0#172 (ontology 4.0.4)
-// now depends on so a regression fails loudly instead of silently weakening the
-// fail-closed color gate.
+// member-of pair and its reliance on the port_color_map override.
+// No behavior change: these pin the enforcement ffs0#172 (ontology 4.0.4) now
+// depends on so a regression fails loudly.
 //
-// Three surfaces are covered:
-//   1. the loader captures WF02's member-of/has-member additional pair;
-//   2. ValidateLINK accepts member-of AND delegates-to and rejects an undeclared
-//      variant — both WF02 pairs ride the same pair+color enforcement;
-//   3. the port_color_map override merges onto DefaultPortColors, an ontology
-//      color wins, and an unknown or null color is a LOAD ERROR (a typo or a
-//      None-emitting script must not silently alias onto the exempt "" color).
+// SCOPE — deliberately NOT re-testing the port_color_map merge itself.
+// loader_test.go already covers that surface (TestLoadRegistry_PortColorMapOverride
+// asserts override-wins, new-port-added, "" exemption, AND untouched-default;
+// *_UnknownColorErrors and *_NullColorErrors cover the load-error paths). #64
+// ask 2 called it "untested today", but it is tested — with SYNTHETIC ports.
+// What was genuinely missing is the member-of specifics:
+//   1. the loader captures WF02's member-of/has-member additional pair, and
+//      ValidateLINK accepts member-of AND delegates-to while rejecting an
+//      undeclared variant — the pair + color gate enforcement 4.0.4 rides;
+//   2. against the REAL ontology, member-of is present and colored auth, and
+//      every declared pair's ports carry a color (the loader only WARNS on
+//      uncovered ports — this makes it a hard failure for the shipped file).
 //
 // INTERIM MANUAL CHECK (moos-kernel#64 ask 4), until the integration test below
 // is wired into a CI job: at Doctor time, diff `/operad/rewrite-categories` and
 // `/operad/port-colors` against ffs0/kb/superset/ontology.json — every declared
-// pair must be served and every declared port must carry a color. The
-// MOOS_INTEGRATION test here is that readback as code; run it with
-// `MOOS_INTEGRATION=1 go test ./internal/operad/ -run DeclaredPairsAllColored`.
-
-// (writeOntology — seed a temp ontology.json — is shared from loader_test.go.)
+// pair must be served and every declared port must carry a color. Run the coded
+// readback with `MOOS_INTEGRATION=1 go test ./internal/operad/ -run DeclaredPairsAllColored`.
 
 // wf02Ontology declares WF02 governance with BOTH additional pairs the 4.0.x
 // line carries (delegates-to v3.13, member-of v4.0.4) and colors member-of /
@@ -109,6 +110,8 @@ func TestLoadRegistry_WF02MemberOfPair(t *testing.T) {
 
 // TestValidateLINK_WF02Pairs — both 4.0.x WF02 additional pairs pass the pair +
 // color gate, and an undeclared variant is rejected with the declared set named.
+// member-of/has-member are auth-colored ONLY via the port_color_map override, so
+// this also exercises that the override reaches the color gate (fail-closed).
 func TestValidateLINK_WF02Pairs(t *testing.T) {
 	reg, err := LoadRegistry(writeOntology(t, wf02Ontology))
 	if err != nil {
@@ -155,110 +158,13 @@ func TestValidateLINK_WF02Pairs(t *testing.T) {
 	}
 }
 
-// TestLoadRegistry_PortColorMap_OverrideMergesOntoDefaults — the override adds
-// member-of/has-member (absent from DefaultPortColors) WITHOUT dropping the
-// built-in defaults. Merge, not replace.
-func TestLoadRegistry_PortColorMap_OverrideMergesOntoDefaults(t *testing.T) {
-	reg, err := LoadRegistry(writeOntology(t, wf02Ontology))
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
-	if c := reg.PortColors["member-of"]; c != graph.ColorAuth {
-		t.Errorf("member-of color = %q, want auth (from port_color_map)", c)
-	}
-	if c := reg.PortColors["has-member"]; c != graph.ColorAuth {
-		t.Errorf("has-member color = %q, want auth (from port_color_map)", c)
-	}
-	// A built-in default must survive the merge.
-	if c := reg.PortColors["owns"]; c != graph.ColorTopology {
-		t.Errorf("built-in owns color = %q, want topology (merge dropped defaults?)", c)
-	}
-}
-
-// TestLoadRegistry_PortColorMap_OverrideRecolorsDefault — an ontology color for
-// a port already in DefaultPortColors wins over the built-in.
-func TestLoadRegistry_PortColorMap_OverrideRecolorsDefault(t *testing.T) {
-	// "owns" defaults to topology; override it to auth and assert the override wins.
-	body := `{
-		"version": "4.0.4",
-		"types": {"s2_infrastructure": [], "s1_grammar": [], "interaction_nodes": []},
-		"rewrite_categories": [],
-		"port_color_compatibility": {"matrix": {}, "port_color_map": {"owns": "auth"}}
-	}`
-	reg, err := LoadRegistry(writeOntology(t, body))
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
-	if c := reg.PortColors["owns"]; c != graph.ColorAuth {
-		t.Errorf("overridden owns color = %q, want auth (override should win over the topology default)", c)
-	}
-}
-
-// TestLoadRegistry_PortColorMap_UnknownColorIsLoadError — a bogus color name is
-// a load error (a typo must not silently weaken the gate).
-func TestLoadRegistry_PortColorMap_UnknownColorIsLoadError(t *testing.T) {
-	body := `{
-		"version": "4.0.4",
-		"types": {"s2_infrastructure": [], "s1_grammar": [], "interaction_nodes": []},
-		"rewrite_categories": [],
-		"port_color_compatibility": {"matrix": {}, "port_color_map": {"member-of": "authority"}}
-	}`
-	_, err := LoadRegistry(writeOntology(t, body))
-	if err == nil {
-		t.Fatal("expected load error for unknown color 'authority'; got nil")
-	}
-	if !strings.Contains(err.Error(), "unknown color") || !strings.Contains(err.Error(), "member-of") {
-		t.Errorf("error should name the unknown color and port; got %q", err.Error())
-	}
-}
-
-// TestLoadRegistry_PortColorMap_NullColorIsLoadError — JSON null is a load error
-// distinct from the empty-string exemption (null must not alias onto "").
-func TestLoadRegistry_PortColorMap_NullColorIsLoadError(t *testing.T) {
-	body := `{
-		"version": "4.0.4",
-		"types": {"s2_infrastructure": [], "s1_grammar": [], "interaction_nodes": []},
-		"rewrite_categories": [],
-		"port_color_compatibility": {"matrix": {}, "port_color_map": {"member-of": null}}
-	}`
-	_, err := LoadRegistry(writeOntology(t, body))
-	if err == nil {
-		t.Fatal("expected load error for null color; got nil")
-	}
-	if !strings.Contains(err.Error(), "null color") {
-		t.Errorf("error should flag the null color; got %q", err.Error())
-	}
-}
-
-// TestLoadRegistry_PortColorMap_EmptyStringIsExemption — "" is an explicit,
-// documented exemption: it loads (no error) and sets the port to the empty
-// color, which the §12.2 gate reads as "skip the matrix check".
-func TestLoadRegistry_PortColorMap_EmptyStringIsExemption(t *testing.T) {
-	body := `{
-		"version": "4.0.4",
-		"types": {"s2_infrastructure": [], "s1_grammar": [], "interaction_nodes": []},
-		"rewrite_categories": [],
-		"port_color_compatibility": {"matrix": {}, "port_color_map": {"ambiguous-port": ""}}
-	}`
-	reg, err := LoadRegistry(writeOntology(t, body))
-	if err != nil {
-		t.Fatalf("empty-string exemption should load cleanly; got: %v", err)
-	}
-	c, ok := reg.PortColors["ambiguous-port"]
-	if !ok {
-		t.Fatal("exempt port missing from PortColors (should be present with empty color)")
-	}
-	if c != "" {
-		t.Errorf("exempt port color = %q, want \"\" (exemption)", c)
-	}
-}
-
 // TestLoadRegistry_DeclaredPairsAllColored_Integration is the declared-vs-loaded
 // readback (moos-kernel#64 ask 3) as a test: against the REAL sibling ontology,
 // every port of every declared pair (primary + additional, across all WFs) must
 // carry a color in the merged PortColors — otherwise a LINK on that pair is
-// rejected fail-closed at runtime. The loader only WARNS on uncovered ports;
-// this makes it a hard failure for the shipped ontology.
+// rejected fail-closed at runtime. member-of must be present + auth (the 4.0.4
+// first-use of the override). The loader only WARNS on uncovered ports; this
+// makes it a hard failure for the shipped ontology.
 //
 // Guarded behind MOOS_INTEGRATION=1 so `go test ./...` stays hermetic. Fails
 // (not skips) when the flag is set but no candidate path resolves.
