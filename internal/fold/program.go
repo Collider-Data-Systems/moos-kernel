@@ -33,11 +33,10 @@ func EvaluateProgramAt(state graph.GraphState, envelopes []graph.Envelope, appli
 		if useAppliedAt {
 			ts = appliedAt[i]
 		}
-		next, result, err := EvaluateAt(working, env, ts)
+		result, err := evaluateInPlace(&working, env, ts)
 		if err != nil {
 			return state, nil, fmt.Errorf("program step %d (%s): %w", i, env.RewriteType, err)
 		}
-		working = next
 		results = append(results, result)
 	}
 	return working, results, nil
