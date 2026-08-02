@@ -126,6 +126,12 @@ func main() {
 	}
 	log.Printf("runtime: replayed %d rewrites", rt.LogLen())
 
+	// Identity for the log-integrity report (A6). The federation fan-in
+	// concatenates every fold's entries without a kernel key, so a report that
+	// cannot name its own fold is ambiguous the moment it leaves this process.
+	// Identity only — never used as an actor, grants no authority.
+	rt.SetKernelURN(graph.URN(fmt.Sprintf("urn:moos:kernel:%s.primary", *seedWS)))
+
 	// --- Seed infrastructure nodes (idempotent) ---
 	if *doSeed {
 		if err := seedInfrastructure(rt, *seedUser, *seedWS); err != nil {

@@ -165,3 +165,13 @@ func (l *LogStore) ReadAll() ([]graph.PersistedRewrite, error) {
 	}
 	return entries, nil
 }
+
+// SingleWriter reports whether this store holds the exclusive JSONL writer
+// lock. False means the store was opened via NewSharedLogStore
+// (--allow-shared-log), the one remaining way two writers can mint the same
+// log_seq — the historical incident class the log-integrity report describes.
+func (l *LogStore) SingleWriter() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return !l.shared
+}

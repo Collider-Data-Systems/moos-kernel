@@ -58,6 +58,54 @@ type Runtime struct {
 	// governance_proposal envelopes. Empty value → DefaultSweepActor. See
 	// SetSweepActor / RunTimedSweep in sweep.go.
 	sweepActor graph.URN
+
+	// kernelURN identifies THIS fold. It is stamped into the log-integrity
+	// report so the report stays meaningful after a federation fan-in, which
+	// concatenates every kernel's entries without a kernel key. Set once at
+	// boot via SetKernelURN; empty is tolerated (the field is omitted).
+	kernelURN graph.URN
+
+	// logIntegrity is the immutable historical duplicate-seq report, computed
+	// once at replay and only when duplicates exist. Zero value = clean fold.
+	logIntegrity LogIntegrity
+}
+
+// SetKernelURN records this kernel's own URN for the log-integrity report.
+// Call once at boot, before serving. Identity only — it grants no authority
+// and is never used as an actor.
+func (rt *Runtime) SetKernelURN(urn graph.URN) { rt.kernelURN = urn }
+
+// LogIntegrity returns the historical duplicate-log_seq report. On a fold with
+// no duplicates every count is zero and Groups is empty — that is the answer,
+// not a missing report.
+func (rt *Runtime) LogIntegrity() LogIntegrity {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	report := rt.logIntegrity
+	report.KernelURN = string(rt.kernelURN)
+	if report.LogLen == 0 && len(report.Groups) == 0 {
+		// Clean fold: nothing was computed at replay. Serve live scalars so the
+		// endpoint always answers with the same shape.
+		report.LogLen = len(rt.log)
+		report.MaxLogSeq = rt.logSeq.Load()
+		report.LogSeqMissing = rt.preSeqEntries
+		report.CollisionKinds = map[string]int{}
+		report.SingleWriter = storeIsSingleWriter(rt.store)
+	}
+	return report
+}
+
+// storeIsSingleWriter reports whether the backing store holds an exclusive
+// writer lock. A store that does not implement the reporter is treated as
+// single-writer only when it cannot be shared at all (MemStore); anything
+// unknown is reported false, because this is a safety signal and the honest
+// answer to "I don't know" is "don't assume you're protected".
+func storeIsSingleWriter(s Store) bool {
+	type singleWriterReporter interface{ SingleWriter() bool }
+	if r, ok := s.(singleWriterReporter); ok {
+		return r.SingleWriter()
+	}
+	return false
 }
 
 // NewRuntime creates a Runtime by replaying the full store into memory.
@@ -120,6 +168,12 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 	rt.preSeqEntries = preSeq
 	if len(dupSeqs) > 0 {
 		excess := len(entries) - preSeq - len(seen)
+		// A6: build the forensic report while we already know the duplicate
+		// set. Gated on duplicates existing, so a healthy fold pays nothing.
+		rt.logIntegrity = computeLogIntegrity(
+			entries, dupSeqs, maxSeq, preSeq, len(seen),
+			storeIsSingleWriter(store), rt.kernelURN,
+		)
 		sample := dupSeqs
 		if len(sample) > 8 {
 			sample = sample[:8]
