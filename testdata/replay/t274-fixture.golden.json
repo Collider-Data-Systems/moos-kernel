@@ -84,7 +84,7 @@
       "src_port": "has-occupant",
       "src_color": "",
       "tgt_urn": "urn:moos:agent:fixture.engine",
-      "tgt_port": "occupies",
+      "tgt_port": "is-occupant-of",
       "tgt_color": "",
       "created_at": "2026-08-02T00:00:04Z"
     },
@@ -92,10 +92,10 @@
       "urn": "urn:moos:rel:fixture.semantic",
       "rewrite_category": "WF15",
       "src_urn": "urn:moos:claim:fixture.first",
-      "src_port": "relates-to",
+      "src_port": "{semantic}",
       "src_color": "",
       "tgt_urn": "urn:moos:knowledge_item:fixture.ki-1",
-      "tgt_port": "related-from",
+      "tgt_port": "{semantic}",
       "tgt_color": "",
       "contract_urn": "urn:moos:contract:fixture.c1",
       "created_at": "2026-08-02T00:00:12Z"
