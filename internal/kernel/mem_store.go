@@ -32,3 +32,7 @@ func (m *MemStore) ReadAll() ([]graph.PersistedRewrite, error) {
 	copy(cp, m.log)
 	return cp, nil
 }
+
+// SingleWriter is always true for an in-memory store: there is no file for a
+// second process to share, so the multi-writer seq race cannot arise.
+func (m *MemStore) SingleWriter() bool { return true }

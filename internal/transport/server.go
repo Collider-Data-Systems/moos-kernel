@@ -193,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /log", s.handleGetLog)
 	mux.HandleFunc("GET /log/stream", s.handleLogStream)
+	mux.HandleFunc("GET /log/integrity", s.handleLogIntegrity)
 
 	mux.HandleFunc("GET /fold", s.handleGetFold)
 	mux.HandleFunc("GET /fold/stream", s.handleFoldStream)
@@ -249,14 +250,39 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		ontologyVersion = s.registry.Version
 	}
 	logLen, maxLogSeq := s.inspect.LogStats()
-	writeJSON(w, http.StatusOK, map[string]any{
+	integrity := s.inspect.LogIntegrity()
+	// Every pre-existing property keeps its name, type and meaning — old
+	// consumers (router fan-in, Doctor, the validator skill) are unaffected.
+	// The additions are bounded scalars only; the forensic detail lives at
+	// GET /log/integrity so /healthz stays cheap enough to poll fleet-wide.
+	body := map[string]any{
 		"status":           "ok",
 		"log_len":          logLen,
 		"max_log_seq":      maxLogSeq,
 		"log_seq_missing":  s.inspect.LogSeqMissing(),
 		"t_day":            currentTDay(),
 		"ontology_version": ontologyVersion,
-	})
+
+		"duplicate_log_seq_values":         integrity.DuplicateLogSeqValues,
+		"duplicate_log_seq_excess_entries": integrity.DuplicateLogSeqExcessEntries,
+		"log_seq_collision_kinds":          integrity.CollisionKinds,
+		// The one FORWARD-looking signal here: the retrospective counters cannot
+		// detect a new collision if the single-writer lock was bypassed.
+		"log_single_writer": integrity.SingleWriter,
+	}
+	if integrity.KernelURN != "" {
+		// Self-identification: the federation fan-in concatenates folds without
+		// a kernel key, so log_seq is ambiguous fleet-wide without this.
+		body["kernel_urn"] = integrity.KernelURN
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// handleLogIntegrity serves the full historical duplicate-log_seq report.
+// Read-only and derived: it never mutates the log, and grandfathered history is
+// reported, never repaired (no renumber, no dedup — Sam's t274 ruling).
+func (s *Server) handleLogIntegrity(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.inspect.LogIntegrity())
 }
 
 // --- State ---

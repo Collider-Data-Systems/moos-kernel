@@ -59,6 +59,54 @@ type Runtime struct {
 	// governance_proposal envelopes. Empty value → DefaultSweepActor. See
 	// SetSweepActor / RunTimedSweep in sweep.go.
 	sweepActor graph.URN
+
+	// kernelURN identifies THIS fold. It is stamped into the log-integrity
+	// report so the report stays meaningful after a federation fan-in, which
+	// concatenates every kernel's entries without a kernel key. Set once at
+	// boot via SetKernelURN; empty is tolerated (the field is omitted).
+	kernelURN graph.URN
+
+	// logIntegrity is the immutable historical duplicate-seq report. Scalars
+	// are captured for EVERY fold at replay; the collision-group walk runs only
+	// when duplicates exist. Deliberately a REPLAY-TIME SNAPSHOT, not a live
+	// view: collisions are historical facts that new (locked) writes cannot
+	// add to, so freezing keeps the report's internal arithmetic
+	// (excess = log_len − log_seq_missing − distinct seqs) self-consistent
+	// forever. Live counters stay on /healthz via LogStats.
+	logIntegrity LogIntegrity
+}
+
+// SetKernelURN records this kernel's own URN for the log-integrity report.
+// Call once at boot, before serving. Identity only — it grants no authority
+// and is never used as an actor.
+func (rt *Runtime) SetKernelURN(urn graph.URN) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.kernelURN = urn
+}
+
+// LogIntegrity returns the historical duplicate-log_seq report — a replay-time
+// snapshot (see the field comment). On a fold with no duplicates every count
+// is zero and Groups is empty — that is the answer, not a missing report.
+func (rt *Runtime) LogIntegrity() LogIntegrity {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	report := rt.logIntegrity
+	report.KernelURN = string(rt.kernelURN)
+	return report
+}
+
+// storeIsSingleWriter reports whether the backing store holds an exclusive
+// writer lock. A store that does not implement the reporter is treated as
+// single-writer only when it cannot be shared at all (MemStore); anything
+// unknown is reported false, because this is a safety signal and the honest
+// answer to "I don't know" is "don't assume you're protected".
+func storeIsSingleWriter(s Store) bool {
+	type singleWriterReporter interface{ SingleWriter() bool }
+	if r, ok := s.(singleWriterReporter); ok {
+		return r.SingleWriter()
+	}
+	return false
 }
 
 // NewRuntime creates a Runtime by replaying the full store into memory.
@@ -120,8 +168,23 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 	}
 	rt.logSeq.Store(maxSeq)
 	rt.preSeqEntries = preSeq
+	// A6: replay-time integrity snapshot. Scalars for every fold; the
+	// per-entry group walk only when duplicates exist, so a healthy fold
+	// pays nothing beyond this struct literal.
+	rt.logIntegrity = LogIntegrity{
+		LogLen:         len(entries),
+		MaxLogSeq:      maxSeq,
+		LogSeqMissing:  preSeq,
+		CollisionKinds: map[string]int{},
+		SingleWriter:   storeIsSingleWriter(store),
+		Groups:         []CollisionGroup{},
+	}
 	if len(dupSeqs) > 0 {
 		excess := len(entries) - preSeq - len(seen)
+		rt.logIntegrity = computeLogIntegrity(
+			entries, dupSeqs, maxSeq, preSeq, len(seen),
+			storeIsSingleWriter(store), rt.kernelURN,
+		)
 		sample := dupSeqs
 		if len(sample) > 8 {
 			sample = sample[:8]

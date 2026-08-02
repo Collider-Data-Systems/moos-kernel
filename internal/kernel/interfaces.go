@@ -15,6 +15,9 @@ type InspectKernel interface {
 	LogLen() int
 	LogStats() (logLen int, maxLogSeq int64)
 	LogSeqMissing() int
+	// LogIntegrity is the immutable historical duplicate-log_seq report (A6).
+	// Always answers; a clean fold reports zero counts and no groups.
+	LogIntegrity() LogIntegrity
 }
 
 // WriteKernel provides write access to the kernel.
