@@ -22,8 +22,17 @@ func Evaluate(state graph.GraphState, env graph.Envelope) (graph.GraphState, gra
 // CreatedAt fields (node/relation). Runtime applies should pass the exact
 // persisted AppliedAt so replay remains bit-deterministic over time.
 func EvaluateAt(state graph.GraphState, env graph.Envelope, appliedAt time.Time) (graph.GraphState, graph.EvalResult, error) {
-	if err := validateEnvelopeStructure(env); err != nil {
+	next := state.Clone()
+	result, err := evaluateInPlace(&next, env, appliedAt)
+	if err != nil {
 		return state, graph.EvalResult{}, err
+	}
+	return next, result, nil
+}
+
+func evaluateInPlace(state *graph.GraphState, env graph.Envelope, appliedAt time.Time) (graph.EvalResult, error) {
+	if err := validateEnvelopeStructure(env); err != nil {
+		return graph.EvalResult{}, err
 	}
 	ts := appliedAt.UTC()
 
@@ -37,13 +46,13 @@ func EvaluateAt(state graph.GraphState, env graph.Envelope, appliedAt time.Time)
 	case graph.UNLINK:
 		return applyUNLINK(state, env)
 	default:
-		return state, graph.EvalResult{}, fmt.Errorf("%w: %q", ErrInvalidRewriteType, env.RewriteType)
+		return graph.EvalResult{}, fmt.Errorf("%w: %q", ErrInvalidRewriteType, env.RewriteType)
 	}
 }
 
-func applyADD(state graph.GraphState, env graph.Envelope, createdAt time.Time) (graph.GraphState, graph.EvalResult, error) {
+func applyADD(state *graph.GraphState, env graph.Envelope, createdAt time.Time) (graph.EvalResult, error) {
 	if _, exists := state.Nodes[env.NodeURN]; exists {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: %s", ErrNodeExists, env.NodeURN)
+		return graph.EvalResult{}, fmt.Errorf("%w: %s", ErrNodeExists, env.NodeURN)
 	}
 
 	props := make(map[string]graph.Property, len(env.Properties))
@@ -51,8 +60,7 @@ func applyADD(state graph.GraphState, env graph.Envelope, createdAt time.Time) (
 		props[k] = v
 	}
 
-	next := state.Clone()
-	next.Nodes[env.NodeURN] = graph.Node{
+	state.Nodes[env.NodeURN] = graph.Node{
 		URN:        env.NodeURN,
 		TypeID:     env.TypeID,
 		Properties: props,
@@ -62,26 +70,25 @@ func applyADD(state graph.GraphState, env graph.Envelope, createdAt time.Time) (
 	// Maintain the NodesByType index so sweep/t-cone can look up nodes by
 	// TypeID in O(bucket-size) instead of O(all-nodes). The helper tolerates
 	// a nil map (older states created without NewGraphState).
-	graph.IndexAddNodeByType(next.NodesByType, env.NodeURN, env.TypeID)
-	return next, graph.EvalResult{AffectedNodeURN: env.NodeURN}, nil
+	graph.IndexAddNodeByType(state.NodesByType, env.NodeURN, env.TypeID)
+	return graph.EvalResult{AffectedNodeURN: env.NodeURN}, nil
 }
 
-func applyLINK(state graph.GraphState, env graph.Envelope, createdAt time.Time) (graph.GraphState, graph.EvalResult, error) {
+func applyLINK(state *graph.GraphState, env graph.Envelope, createdAt time.Time) (graph.EvalResult, error) {
 	if _, exists := state.Nodes[env.SrcURN]; !exists {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: src %s", ErrNodeNotFound, env.SrcURN)
+		return graph.EvalResult{}, fmt.Errorf("%w: src %s", ErrNodeNotFound, env.SrcURN)
 	}
 	if _, exists := state.Nodes[env.TgtURN]; !exists {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: tgt %s", ErrNodeNotFound, env.TgtURN)
+		return graph.EvalResult{}, fmt.Errorf("%w: tgt %s", ErrNodeNotFound, env.TgtURN)
 	}
 	if _, exists := state.Relations[env.RelationURN]; exists {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: %s", ErrRelationExists, env.RelationURN)
+		return graph.EvalResult{}, fmt.Errorf("%w: %s", ErrRelationExists, env.RelationURN)
 	}
 	if env.RewriteCategory == graph.WF15 && env.ContractURN == "" {
-		return state, graph.EvalResult{}, ErrWF15MissingContract
+		return graph.EvalResult{}, ErrWF15MissingContract
 	}
 
-	next := state.Clone()
-	next.Relations[env.RelationURN] = graph.Relation{
+	state.Relations[env.RelationURN] = graph.Relation{
 		URN:             env.RelationURN,
 		RewriteCategory: env.RewriteCategory,
 		SrcURN:          env.SrcURN,
@@ -94,14 +101,14 @@ func applyLINK(state graph.GraphState, env graph.Envelope, createdAt time.Time) 
 	// Maintain the by-endpoint relation indexes so occupancy walks and
 	// t-cone neighbourhood queries run in O(edges-at-urn) instead of
 	// O(all-relations).
-	graph.IndexAddRelationEndpoints(next.RelationsBySrc, next.RelationsByTgt, env.RelationURN, env.SrcURN, env.TgtURN)
-	return next, graph.EvalResult{AffectedRelationURN: env.RelationURN}, nil
+	graph.IndexAddRelationEndpoints(state.RelationsBySrc, state.RelationsByTgt, env.RelationURN, env.SrcURN, env.TgtURN)
+	return graph.EvalResult{AffectedRelationURN: env.RelationURN}, nil
 }
 
-func applyMUTATE(state graph.GraphState, env graph.Envelope) (graph.GraphState, graph.EvalResult, error) {
+func applyMUTATE(state *graph.GraphState, env graph.Envelope) (graph.EvalResult, error) {
 	node, exists := state.Nodes[env.TargetURN]
 	if !exists {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: %s", ErrNodeNotFound, env.TargetURN)
+		return graph.EvalResult{}, fmt.Errorf("%w: %s", ErrNodeNotFound, env.TargetURN)
 	}
 
 	prop, hasProp := node.Properties[env.Field]
@@ -109,10 +116,9 @@ func applyMUTATE(state graph.GraphState, env graph.Envelope) (graph.GraphState, 
 		// Additive MUTATE: field not yet on this node — use injected PropertySpec from runtime
 		// (runtime validates against ontology and injects spec for new optional properties).
 		if env.PropertySpec == nil {
-			return state, graph.EvalResult{}, fmt.Errorf("%w: field %q not found on node %s", ErrFieldNotInScope, env.Field, env.TargetURN)
+			return graph.EvalResult{}, fmt.Errorf("%w: field %q not found on node %s", ErrFieldNotInScope, env.Field, env.TargetURN)
 		}
-		next := state.Clone()
-		mutated := next.Nodes[env.TargetURN]
+		mutated := state.Nodes[env.TargetURN]
 		mutated.Version++
 		mutated.Properties[env.Field] = graph.Property{
 			Value:          env.NewValue,
@@ -121,20 +127,19 @@ func applyMUTATE(state graph.GraphState, env graph.Envelope) (graph.GraphState, 
 			StratumOrigin:  env.PropertySpec.StratumOrigin,
 			ValidationType: env.PropertySpec.ValidationType,
 		}
-		next.Nodes[env.TargetURN] = mutated
-		return next, graph.EvalResult{AffectedNodeURN: env.TargetURN}, nil
+		state.Nodes[env.TargetURN] = mutated
+		return graph.EvalResult{AffectedNodeURN: env.TargetURN}, nil
 	}
 	if prop.Immutable() {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: field %q on node %s", ErrImmutableProperty, env.Field, env.TargetURN)
+		return graph.EvalResult{}, fmt.Errorf("%w: field %q on node %s", ErrImmutableProperty, env.Field, env.TargetURN)
 	}
 
 	// Optimistic CAS: reject if caller expects a specific version but node has diverged
 	if env.ExpectedVersion != 0 && node.Version != env.ExpectedVersion {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: expected %d got %d", ErrVersionConflict, env.ExpectedVersion, node.Version)
+		return graph.EvalResult{}, fmt.Errorf("%w: expected %d got %d", ErrVersionConflict, env.ExpectedVersion, node.Version)
 	}
 
-	next := state.Clone()
-	mutated := next.Nodes[env.TargetURN]
+	mutated := state.Nodes[env.TargetURN]
 	mutated.Version++
 	mutated.Properties[env.Field] = graph.Property{
 		Value:          env.NewValue,
@@ -143,21 +148,20 @@ func applyMUTATE(state graph.GraphState, env graph.Envelope) (graph.GraphState, 
 		StratumOrigin:  prop.StratumOrigin,
 		ValidationType: prop.ValidationType,
 	}
-	next.Nodes[env.TargetURN] = mutated
-	return next, graph.EvalResult{AffectedNodeURN: env.TargetURN}, nil
+	state.Nodes[env.TargetURN] = mutated
+	return graph.EvalResult{AffectedNodeURN: env.TargetURN}, nil
 }
 
-func applyUNLINK(state graph.GraphState, env graph.Envelope) (graph.GraphState, graph.EvalResult, error) {
+func applyUNLINK(state *graph.GraphState, env graph.Envelope) (graph.EvalResult, error) {
 	existing, exists := state.Relations[env.RelationURN]
 	if !exists {
-		return state, graph.EvalResult{}, fmt.Errorf("%w: %s", ErrRelationNotFound, env.RelationURN)
+		return graph.EvalResult{}, fmt.Errorf("%w: %s", ErrRelationNotFound, env.RelationURN)
 	}
-	next := state.Clone()
-	delete(next.Relations, env.RelationURN)
+	delete(state.Relations, env.RelationURN)
 	// Remove the relation from both endpoint indexes so subsequent walks
 	// don't see a stale URN.
-	graph.IndexRemoveRelationEndpoints(next.RelationsBySrc, next.RelationsByTgt, env.RelationURN, existing.SrcURN, existing.TgtURN)
-	return next, graph.EvalResult{AffectedRelationURN: env.RelationURN}, nil
+	graph.IndexRemoveRelationEndpoints(state.RelationsBySrc, state.RelationsByTgt, env.RelationURN, existing.SrcURN, existing.TgtURN)
+	return graph.EvalResult{AffectedRelationURN: env.RelationURN}, nil
 }
 
 func validateEnvelopeStructure(env graph.Envelope) error {

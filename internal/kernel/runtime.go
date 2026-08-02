@@ -36,12 +36,13 @@ const (
 // All writes go through Apply or ApplyProgram.
 // Reads are lock-free via State() snapshot.
 type Runtime struct {
-	mu       sync.RWMutex
-	state    graph.GraphState
-	log      []graph.PersistedRewrite
-	store    Store
-	registry *operad.Registry
-	hdcIndex *hdc.LiveIndex
+	mu         sync.RWMutex
+	state      graph.GraphState
+	log        []graph.PersistedRewrite
+	store      Store
+	registry   *operad.Registry
+	hdcIndex   *hdc.LiveIndex
+	hdcEncoder *hdc.Encoder
 
 	subscriberMu sync.Mutex
 	subscribers  map[string]chan graph.PersistedRewrite
@@ -79,6 +80,7 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 		store:       store,
 		registry:    registry,
 		hdcIndex:    hdc.NewLiveIndex(0.3),
+		hdcEncoder:  hdc.NewEncoder(),
 		subscribers: make(map[string]chan graph.PersistedRewrite),
 	}
 	// Seed the sequence counter from the MAX persisted log_seq, not the last
@@ -968,7 +970,7 @@ func (rt *Runtime) runHDCIndexAndDriftLocked(trigger graph.Envelope) {
 		return
 	}
 
-	rt.hdcIndex.Recompute(rt.state, nil)
+	rt.hdcIndex.Recompute(rt.state, rt.hdcEncoder)
 	drifted := rt.hdcIndex.Drifted()
 	if len(drifted) == 0 {
 		return
@@ -1065,7 +1067,7 @@ func (rt *Runtime) runHDCIndexAndDriftLocked(trigger graph.Envelope) {
 		rt.applyReactiveLocked(linkClaim)
 	}
 
-	rt.hdcIndex.Recompute(rt.state, nil)
+	rt.hdcIndex.Recompute(rt.state, rt.hdcEncoder)
 }
 
 func (rt *Runtime) hdcActorURN(defaultActor graph.URN) graph.URN {
