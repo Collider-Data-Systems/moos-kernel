@@ -1,0 +1,4 @@
+# Replay-equivalence fixtures are byte-exact goldens: the test compares the
+# golden file raw off disk (replay_fixture_test.go), so a CRLF smudge on
+# autocrlf=true clones fails the byte check while the hash check passes.
+testdata/replay/* -text
