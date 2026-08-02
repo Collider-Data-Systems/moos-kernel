@@ -1,0 +1,104 @@
+{
+  "nodes": {
+    "urn:moos:agent:fixture.engine": {
+      "urn": "urn:moos:agent:fixture.engine",
+      "type_id": "agent",
+      "properties": {},
+      "created_at": "2026-08-02T00:00:03Z",
+      "version": 1
+    },
+    "urn:moos:claim:fixture.first": {
+      "urn": "urn:moos:claim:fixture.first",
+      "type_id": "claim",
+      "properties": {
+        "confidence": {
+          "value": "high",
+          "mutability": "mutable",
+          "authority_scope": "owner",
+          "stratum_origin": 0
+        },
+        "owner_urn": {
+          "value": "urn:moos:user:fixture-sam",
+          "mutability": "immutable",
+          "authority_scope": "",
+          "stratum_origin": 0
+        },
+        "text": {
+          "value": "the log is truth; state is derived",
+          "mutability": "mutable",
+          "authority_scope": "owner",
+          "stratum_origin": 0
+        }
+      },
+      "created_at": "2026-08-02T00:00:05Z",
+      "version": 3
+    },
+    "urn:moos:knowledge_item:fixture.ki-1": {
+      "urn": "urn:moos:knowledge_item:fixture.ki-1",
+      "type_id": "knowledge_item",
+      "properties": {
+        "text": {
+          "value": "replay equivalence is the acceptance gate",
+          "mutability": "mutable",
+          "authority_scope": "owner",
+          "stratum_origin": 0
+        }
+      },
+      "created_at": "2026-08-02T00:00:07Z",
+      "version": 1
+    },
+    "urn:moos:session:fixture.lane": {
+      "urn": "urn:moos:session:fixture.lane",
+      "type_id": "session",
+      "properties": {
+        "purpose": {
+          "value": "replay fixture",
+          "mutability": "mutable",
+          "authority_scope": "owner",
+          "stratum_origin": 0
+        }
+      },
+      "created_at": "2026-08-02T00:00:02Z",
+      "version": 1
+    },
+    "urn:moos:user:fixture-sam": {
+      "urn": "urn:moos:user:fixture-sam",
+      "type_id": "user",
+      "properties": {
+        "display_name": {
+          "value": "Fixture Sam",
+          "mutability": "immutable",
+          "authority_scope": "",
+          "stratum_origin": 0
+        }
+      },
+      "created_at": "2026-08-02T00:00:01Z",
+      "version": 1
+    }
+  },
+  "relations": {
+    "urn:moos:rel:fixture.occupancy": {
+      "urn": "urn:moos:rel:fixture.occupancy",
+      "rewrite_category": "WF19",
+      "src_urn": "urn:moos:session:fixture.lane",
+      "src_port": "has-occupant",
+      "src_color": "",
+      "tgt_urn": "urn:moos:agent:fixture.engine",
+      "tgt_port": "is-occupant-of",
+      "tgt_color": "",
+      "created_at": "2026-08-02T00:00:04Z"
+    },
+    "urn:moos:rel:fixture.semantic": {
+      "urn": "urn:moos:rel:fixture.semantic",
+      "rewrite_category": "WF15",
+      "src_urn": "urn:moos:claim:fixture.first",
+      "src_port": "{semantic}",
+      "src_color": "",
+      "tgt_urn": "urn:moos:knowledge_item:fixture.ki-1",
+      "tgt_port": "{semantic}",
+      "tgt_color": "",
+      "contract_urn": "urn:moos:contract:fixture.c1",
+      "created_at": "2026-08-02T00:00:12Z"
+    }
+  }
+}
