@@ -33,6 +33,8 @@ func main() {
 	doSeed := flag.Bool("seed", false, "seed infrastructure nodes from flags")
 	seedUser := flag.String("seed-user", "sam", "username for seed node")
 	seedWS := flag.String("seed-ws", "hp-laptop", "workstation name for seed node")
+	kernelURNFlag := flag.String("kernel-urn", "",
+		"this kernel's own URN (e.g. urn:moos:kernel:hp-z440.moos), stamped into /healthz and /log/integrity for federation disambiguation. Identity only — never an actor. When the fold holds exactly one kernel node that node wins; this flag decides multi-kernel folds; unset+ambiguous = the field is omitted, never guessed.")
 	quicAddr := flag.String("quic-addr", "", "UDP address for HTTP/3 QUIC listener (e.g. :4433). Requires --tls-cert and --tls-key.")
 	tlsCert := flag.String("tls-cert", "", "Path to TLS certificate file (PEM) for QUIC listener")
 	tlsKey := flag.String("tls-key", "", "Path to TLS private key file (PEM) for QUIC listener")
@@ -126,12 +128,6 @@ func main() {
 	}
 	log.Printf("runtime: replayed %d rewrites", rt.LogLen())
 
-	// Identity for the log-integrity report (A6). The federation fan-in
-	// concatenates every fold's entries without a kernel key, so a report that
-	// cannot name its own fold is ambiguous the moment it leaves this process.
-	// Identity only — never used as an actor, grants no authority.
-	rt.SetKernelURN(graph.URN(fmt.Sprintf("urn:moos:kernel:%s.primary", *seedWS)))
-
 	// --- Seed infrastructure nodes (idempotent) ---
 	if *doSeed {
 		if err := seedInfrastructure(rt, *seedUser, *seedWS); err != nil {
@@ -139,6 +135,13 @@ func main() {
 		}
 		log.Printf("seed: infrastructure nodes ready (user=%s, workstation=%s)", *seedUser, *seedWS)
 	}
+
+	// Identity for the log-integrity report (A6) — resolved AFTER seeding so a
+	// first boot can see its own kernel node. Fold first (log is truth), flag
+	// to disambiguate, omitted otherwise: a federation-disambiguation field
+	// that guesses is worse than one that is absent. Identity only — never
+	// used as an actor, grants no authority.
+	rt.SetKernelURN(resolveKernelIdentity(rt, *kernelURNFlag))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -269,6 +272,47 @@ func main() {
 
 // seedInfrastructure seeds the S2 core nodes (user, workstation, kernel).
 // All calls are SeedIfAbsent — safe to call on every restart.
+// resolveKernelIdentity picks the URN this kernel reports as itself in
+// /healthz and /log/integrity. Precedence:
+//
+//  1. The fold, when unambiguous: exactly one kernel node replayed/seeded →
+//     that node IS this kernel (log is truth). A disagreeing flag is warned
+//     about and overridden.
+//  2. The --kernel-urn flag: required on folds that legitimately hold several
+//     kernel nodes (a primary carrying its twins' opens-on targets, or peer
+//     kernels' nodes) — the fold alone cannot say which one is "me".
+//  3. Neither → empty, and reports omit the field. Never guessed: the earlier
+//     draft minted "urn:moos:kernel:<seed-ws>.primary" unconditionally, which
+//     let a twin (or any kernel booted with the default flags) misreport
+//     itself as some other box's primary — a lie in the exact field whose
+//     purpose is federation disambiguation.
+func resolveKernelIdentity(rt *kernel.Runtime, flagURN string) graph.URN {
+	var kernels []graph.URN
+	for _, n := range rt.Nodes() {
+		if n.TypeID == "kernel" {
+			kernels = append(kernels, n.URN)
+		}
+	}
+	explicit := graph.URN(strings.TrimSpace(flagURN))
+
+	switch {
+	case len(kernels) == 1:
+		if explicit != "" && explicit != kernels[0] {
+			log.Printf("kernel identity: --kernel-urn %s disagrees with the fold's single kernel node %s — using the fold (log is truth)", explicit, kernels[0])
+		}
+		return kernels[0]
+	case explicit != "":
+		log.Printf("kernel identity: %s (from --kernel-urn; fold holds %d kernel nodes)", explicit, len(kernels))
+		return explicit
+	case len(kernels) > 1:
+		log.Printf("kernel identity: fold holds %d kernel nodes and no --kernel-urn was given — kernel_urn omitted from reports (pass --kernel-urn to disambiguate)", len(kernels))
+		return ""
+	default:
+		log.Printf("kernel identity: no kernel node in fold and no --kernel-urn — kernel_urn omitted from reports")
+		return ""
+	}
+}
+
 func seedInfrastructure(rt *kernel.Runtime, user, ws string) error {
 	actor := graph.URN("urn:moos:user:" + user)
 	now := time.Now().UTC().Format(time.RFC3339)

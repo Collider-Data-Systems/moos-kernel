@@ -79,8 +79,8 @@ func buildFixture() []graph.PersistedRewrite {
 		// envelopes fingerprint identically, but nothing rejects the second, so
 		// it DOES land and bumps the node's version again. "exact_reapply"
 		// therefore does not imply "folded to nothing" — only per-entry fold
-		// effect can tell these apart. On the real hp-laptop fold this is the
-		// majority class: 7 of 9 exact-reapply groups behave this way.
+		// effect can tell these apart. Historically this is the majority of
+		// the exact-fingerprint groups, not a corner case.
 		{Envelope: mutateEnv(node, 0), LogSeq: 6, AppliedAt: at(8)},
 		{Envelope: mutateEnv(node, 0), LogSeq: 6, AppliedAt: at(63)},
 	}
@@ -237,7 +237,7 @@ func TestLogIntegrity_NextSeqIsMaxPlusOne(t *testing.T) {
 }
 
 // The class the two-valued model cannot express, and the majority class on the
-// real hp-laptop fold: identical fingerprints, and the second entry DOES land.
+// affected fold: identical fingerprints, and the second entry DOES land.
 // An unguarded MUTATE has nothing to reject it, so it re-applies and bumps the
 // node version again — same value, new version. A reader who sees only
 // "exact_reapply" would wrongly conclude this folded to nothing.

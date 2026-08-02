@@ -65,33 +65,33 @@ type Runtime struct {
 	// boot via SetKernelURN; empty is tolerated (the field is omitted).
 	kernelURN graph.URN
 
-	// logIntegrity is the immutable historical duplicate-seq report, computed
-	// once at replay and only when duplicates exist. Zero value = clean fold.
+	// logIntegrity is the immutable historical duplicate-seq report. Scalars
+	// are captured for EVERY fold at replay; the collision-group walk runs only
+	// when duplicates exist. Deliberately a REPLAY-TIME SNAPSHOT, not a live
+	// view: collisions are historical facts that new (locked) writes cannot
+	// add to, so freezing keeps the report's internal arithmetic
+	// (excess = log_len − log_seq_missing − distinct seqs) self-consistent
+	// forever. Live counters stay on /healthz via LogStats.
 	logIntegrity LogIntegrity
 }
 
 // SetKernelURN records this kernel's own URN for the log-integrity report.
 // Call once at boot, before serving. Identity only — it grants no authority
 // and is never used as an actor.
-func (rt *Runtime) SetKernelURN(urn graph.URN) { rt.kernelURN = urn }
+func (rt *Runtime) SetKernelURN(urn graph.URN) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.kernelURN = urn
+}
 
-// LogIntegrity returns the historical duplicate-log_seq report. On a fold with
-// no duplicates every count is zero and Groups is empty — that is the answer,
-// not a missing report.
+// LogIntegrity returns the historical duplicate-log_seq report — a replay-time
+// snapshot (see the field comment). On a fold with no duplicates every count
+// is zero and Groups is empty — that is the answer, not a missing report.
 func (rt *Runtime) LogIntegrity() LogIntegrity {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	report := rt.logIntegrity
 	report.KernelURN = string(rt.kernelURN)
-	if report.LogLen == 0 && len(report.Groups) == 0 {
-		// Clean fold: nothing was computed at replay. Serve live scalars so the
-		// endpoint always answers with the same shape.
-		report.LogLen = len(rt.log)
-		report.MaxLogSeq = rt.logSeq.Load()
-		report.LogSeqMissing = rt.preSeqEntries
-		report.CollisionKinds = map[string]int{}
-		report.SingleWriter = storeIsSingleWriter(rt.store)
-	}
 	return report
 }
 
@@ -166,10 +166,19 @@ func NewRuntime(store Store, registry *operad.Registry) (*Runtime, error) {
 	}
 	rt.logSeq.Store(maxSeq)
 	rt.preSeqEntries = preSeq
+	// A6: replay-time integrity snapshot. Scalars for every fold; the
+	// per-entry group walk only when duplicates exist, so a healthy fold
+	// pays nothing beyond this struct literal.
+	rt.logIntegrity = LogIntegrity{
+		LogLen:         len(entries),
+		MaxLogSeq:      maxSeq,
+		LogSeqMissing:  preSeq,
+		CollisionKinds: map[string]int{},
+		SingleWriter:   storeIsSingleWriter(store),
+		Groups:         []CollisionGroup{},
+	}
 	if len(dupSeqs) > 0 {
 		excess := len(entries) - preSeq - len(seen)
-		// A6: build the forensic report while we already know the duplicate
-		// set. Gated on duplicates existing, so a healthy fold pays nothing.
 		rt.logIntegrity = computeLogIntegrity(
 			entries, dupSeqs, maxSeq, preSeq, len(seen),
 			storeIsSingleWriter(store), rt.kernelURN,

@@ -14,21 +14,24 @@ import (
 // Log integrity — the read-only forensic report over historical duplicate
 // log_seq values (A6; ffs0#178).
 //
-// WHY THIS EXISTS. Two historical incident classes left the hp-laptop fold with
+// WHY THIS EXISTS. Two historical incident classes can leave a fold with
 // log_len > max_log_seq: a two-writer counter race (distinct rewrites minted the
 // same seq) and an operator/harness double-POST (the same envelopes re-applied
-// minutes later). Sam's t274 ruling is to GRANDFATHER both — every entry and
+// minutes later). The governance ruling is to GRANDFATHER both — every entry and
 // every seq value is preserved, no renumber, no dedup, no persisted entry id.
 // What was missing was not a repair but OBSERVABILITY: nothing told a reader
 // which entries collided, or which of them actually changed state.
 //
-// THE PREMISE THIS CORRECTS. The original proposal classified each collision
+// THE PREMISE THIS CORRECTS. An earlier proposal classified each collision
 // group as exact_reapply | distinct_rewrites, from envelope fingerprints alone.
-// "exact_reapply" reads as *applied twice*, and that is false: a re-applied ADD
-// hits ErrNodeExists and a re-applied CAS MUTATE hits ErrVersionConflict, so the
-// second entry is LOGGED and folds to nothing. Fingerprint equality is not fold
-// equivalence. Classification is therefore recorded PER ENTRY, three-valued, and
-// the group kind is kept only as a coarse summary.
+// "exact_reapply" reads as *applied twice*, and that is only sometimes true: a
+// re-applied ADD hits ErrNodeExists and a re-applied CAS MUTATE hits
+// ErrVersionConflict — logged, no fold effect — while a re-applied UNGUARDED
+// MUTATE has nothing to reject it and really lands again. Fingerprint equality
+// is not fold equivalence. Fold effect is therefore recorded PER ENTRY
+// (applied | logged_no_fold_effect), and the group kind is kept only as a
+// coarse fingerprint summary — the (kind × per-entry effect) pair is what
+// distinguishes the classes; neither axis alone can.
 //
 // The report is computed once during replay, is immutable afterwards, and never
 // touches the log: new writes continue to allocate from max(log_seq)+1.
@@ -72,9 +75,9 @@ type CollisionGroup struct {
 	Kind    string           `json:"kind"`
 	Entries []CollisionEntry `json:"entries"`
 	// DistinctAppliedAt counts distinct apply timestamps in the group. >1 means
-	// the collided range spans more than one write event — on hp-laptop, seqs
-	// 1079-1080 were re-written ~3h45m after 1073-1078, which a single group
-	// label cannot show.
+	// the collided range spans more than one write event — observed
+	// historically, where part of a re-applied block landed hours after the
+	// rest, which a single group label cannot show.
 	DistinctAppliedAt int `json:"distinct_applied_at"`
 	// AppliedCount is how many entries in this group actually advanced the fold.
 	// For a true duplicate this is 1; 0 or >1 is anomalous and worth a look.
@@ -220,6 +223,9 @@ func computeLogIntegrity(
 		DuplicateLogSeqExcessEntries: len(entries) - preSeq - distinctRealSeqs,
 		CollisionKinds:               map[string]int{},
 		SingleWriter:                 singleWriter,
+		// Non-nil so the wire shape is always an array, never null — consumers
+		// must not need a null-vs-[] branch (Copilot catch on #69).
+		Groups: []CollisionGroup{},
 	}
 
 	for _, g := range bySeq {
