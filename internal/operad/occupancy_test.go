@@ -165,6 +165,29 @@ func TestCheckAdminCapability_UserActor(t *testing.T) {
 	}
 }
 
+func TestCheckAdminCapability_WidenedGovernsSet(t *testing.T) {
+	state := stateWithAdminChain()
+	for _, agentURN := range []graph.URN{
+		"urn:moos:agent:claude-cowork.hp-laptop",
+		"urn:moos:agent:vscode.hp-laptop.copilot",
+	} {
+		state.Nodes[agentURN] = graph.Node{URN: agentURN, TypeID: "agent"}
+		relationURN := graph.URN("urn:moos:rel:sam.governs." + string(agentURN))
+		state.Relations[relationURN] = graph.Relation{
+			URN:             relationURN,
+			RewriteCategory: graph.WF02,
+			SrcURN:          "urn:moos:user:sam",
+			SrcPort:         "governs",
+			TgtURN:          agentURN,
+			TgtPort:         "governed-by",
+		}
+	}
+
+	if !CheckAdminCapability(state, "urn:moos:session:sam.hp-laptop") {
+		t.Error("expected D10 agent governance links to coexist with the superadmin grant")
+	}
+}
+
 func TestCheckAdminCapability_GroupActor(t *testing.T) {
 	state := stateWithAdminChain()
 	state.Nodes["urn:moos:group:sam"] = graph.Node{URN: "urn:moos:group:sam", TypeID: "group"}

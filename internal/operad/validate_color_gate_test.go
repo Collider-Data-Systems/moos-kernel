@@ -2,7 +2,6 @@ package operad
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -274,19 +273,7 @@ func TestIntegration_ColorGate_CoversAllDeclaredOntologyPairs(t *testing.T) {
 	if os.Getenv("MOOS_INTEGRATION") != "1" {
 		t.Skip("set MOOS_INTEGRATION=1 to run against the sibling ffs0 ontology")
 	}
-	var path string
-	for _, cand := range []string{
-		filepath.Join("..", "..", "..", "ffs0", "kb", "superset", "ontology.json"),
-		filepath.Join("..", "..", "..", "..", "ffs0", "kb", "superset", "ontology.json"),
-	} {
-		if _, err := os.Stat(cand); err == nil {
-			path = cand
-			break
-		}
-	}
-	if path == "" {
-		t.Fatalf("MOOS_INTEGRATION=1 set but sibling ffs0 ontology.json not found")
-	}
+	path := integrationOntologyPath(t)
 	reg, err := LoadRegistry(path)
 	if err != nil {
 		t.Fatalf("LoadRegistry(%s): %v", path, err)

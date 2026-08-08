@@ -29,3 +29,34 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test ./...
+
+  ontology-integration:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    env:
+      FFS0_READ_TOKEN: ${{ secrets.FFS0_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report missing private-repository credential
+        if: ${{ env.FFS0_READ_TOKEN == '' }}
+        run: echo '::warning::FFS0_READ_TOKEN is not configured; real-ontology integration tests were not run.'
+      - name: Checkout private ontology source
+        if: ${{ env.FFS0_READ_TOKEN != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: Collider-Data-Systems/ffs0
+          path: ffs0
+          token: ${{ env.FFS0_READ_TOKEN }}
+          sparse-checkout: kb/superset/ontology.json
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-go@v5
+        if: ${{ env.FFS0_READ_TOKEN != '' }}
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with real ontology
+        if: ${{ env.FFS0_READ_TOKEN != '' }}
+        env:
+          MOOS_INTEGRATION: "1"
+          MOOS_ONTOLOGY_PATH: ${{ github.workspace }}/ffs0/kb/superset/ontology.json
+        run: go test ./...
