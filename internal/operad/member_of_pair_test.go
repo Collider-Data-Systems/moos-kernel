@@ -172,20 +172,7 @@ func TestLoadRegistry_DeclaredPairsAllColored_Integration(t *testing.T) {
 	if os.Getenv("MOOS_INTEGRATION") != "1" {
 		t.Skip("set MOOS_INTEGRATION=1 to run the declared-vs-loaded ontology readback")
 	}
-	candidates := []string{
-		"../../../ffs0/kb/superset/ontology.json",
-		"../../../../ffs0/kb/superset/ontology.json",
-	}
-	var path string
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			path = c
-			break
-		}
-	}
-	if path == "" {
-		t.Fatalf("MOOS_INTEGRATION=1 but ontology.json not found at %v", candidates)
-	}
+	path := integrationOntologyPath(t)
 
 	reg, err := LoadRegistry(path)
 	if err != nil {

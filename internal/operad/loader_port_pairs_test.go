@@ -120,20 +120,7 @@ func TestLoadRegistry_LoadsRealOntology_WF19Pairs(t *testing.T) {
 	if os.Getenv("MOOS_INTEGRATION") != "1" {
 		t.Skip("set MOOS_INTEGRATION=1 to run ontology integration check")
 	}
-	candidates := []string{
-		"../../../ffs0/kb/superset/ontology.json",
-		"../../../../ffs0/kb/superset/ontology.json",
-	}
-	var path string
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			path = c
-			break
-		}
-	}
-	if path == "" {
-		t.Fatalf("MOOS_INTEGRATION=1 but ontology.json not found at %v", candidates)
-	}
+	path := integrationOntologyPath(t)
 
 	reg, err := LoadRegistry(path)
 	if err != nil {

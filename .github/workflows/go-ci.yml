@@ -29,3 +29,26 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test ./...
+
+  ontology-integration:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout private ontology source
+        uses: actions/checkout@v4
+        with:
+          repository: Collider-Data-Systems/ffs0
+          path: ffs0
+          token: ${{ secrets.FFS0_READ_TOKEN }}
+          sparse-checkout: kb/superset/ontology.json
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with real ontology
+        env:
+          MOOS_INTEGRATION: "1"
+          MOOS_ONTOLOGY_PATH: ${{ github.workspace }}/ffs0/kb/superset/ontology.json
+        run: go test ./...
