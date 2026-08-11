@@ -1,8 +1,8 @@
 # moos-kernel
 
 Ontology: `ffs0/kb/superset/ontology.json` (**v3.16.2** — 53 node types, 21 WFs / WF01–WF21)
-Canonical spec: `ffs0/kb/research/kernel/20260417-t187-kernel-proper.md` (M1-M20, live)
-Active implementation-spec docs (kb/research/session/): `20260419-t169-session-generalization.md` (5-facet tuple), `20260422-t172-cowork-as-occupant.md` (platform-host), `20260422-t172-wolframs-court-social-topology.md` (persona court)
+Canonical spec: `ffs0/dev/archive/20260417-t187-kernel-proper.md` (M1-M20, live; the kb/research/ tree was retired and this doc was restored to the archive at t283 — see ffs0/dev/README.md, the generated doc index)
+Active implementation-spec docs (`ffs0/dev/archive/`): `20260419-t169-session-generalization.md` (5-facet tuple), `20260422-t172-cowork-as-occupant.md` (platform-host), `20260422-t172-wolframs-court-social-topology.md` (persona court)
 
 Current hp-laptop runtime (T=206): `ontology_version=3.16.2`, `t_day=206`, `log_len=1467`. Current ffs0 operator state is summarized in `kb/superset/running-state.md`. `session:sam.governance` is currently occupied by `agent:vscode.hp-laptop.copilot`; `agent:claude-code.hp-laptop` is legacy/idle unless Claude Code is actually running and a reviewed payload restores occupancy. Kernel-side context matters for WF19 purpose/scope pins, WF21 causality, applied `calendar_event` G-ingest observations, the scoped-idle T200+ session lanes, the repaired WF07 `anchors/anchor` Calendar source-anchor pair, and §M11/§M12 actor discipline. The T194 code change in this repo aligns occupancy/admin helper principal recognition with the ontology's existing `user|agent|group` authority surface.
 
