@@ -8,6 +8,9 @@
 # Test artifacts
 /tmp/
 
+# Redeploy-leg output (untracked runtime residue)
+redeploy-result.txt
+
 # Log files
 *.log
 *.jsonl
