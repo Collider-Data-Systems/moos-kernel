@@ -394,9 +394,9 @@ func TestThookPredicate_JSONNumberCoercion(t *testing.T) {
 
 	// Predicate stored as float64 (simulating JSON round-trip).
 	pred := map[string]any{
-		"kind": "after_urn",
-		"urn":  "urn:moos:external_op:sam.test",
-		"prop": "deadline_t",
+		"kind":  "after_urn",
+		"urn":   "urn:moos:external_op:sam.test",
+		"prop":  "deadline_t",
 		"value": float64(187),
 	}
 

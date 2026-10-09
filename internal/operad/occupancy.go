@@ -40,8 +40,8 @@ const superadminRoleURN graph.URN = "urn:moos:role:superadmin"
 // (ResolveSessionOccupant, RotateSessionOccupant) and tests all spell them
 // the same way.
 const (
-	hasOccupantSrcPort   = "has-occupant"
-	isOccupantOfTgtPort  = "is-occupant-of"
+	hasOccupantSrcPort  = "has-occupant"
+	isOccupantOfTgtPort = "is-occupant-of"
 )
 
 // principalTypes enumerates the node type_ids that may act as a principal
