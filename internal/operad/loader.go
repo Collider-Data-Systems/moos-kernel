@@ -1,6 +1,7 @@
 package operad
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -32,6 +33,12 @@ func LoadRegistry(path string) (*Registry, error) {
 	var raw ontologyJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("operad: parse ontology %q: %w", path, err)
+	}
+	// json.Unmarshal silently merges two equal keys or keeps only one of
+	// them, so a repeated key in the loaded color section is a load error
+	// (t342, Copilot #80 (4)).
+	if err := checkColorSectionKeys(data); err != nil {
+		return nil, err
 	}
 
 	reg := EmptyRegistry()
@@ -430,6 +437,123 @@ func parseColorMatrix(raw map[string]map[string]any, declared map[graph.PortColo
 		}
 	}
 	return m, nil
+}
+
+// checkColorSectionKeys rejects a repeated key in the part of the color
+// section the loader reads (t342, Copilot #80 (4), kernel#76).
+// json.Unmarshal has already decoded the document without complaint: a
+// repeated port_color_map port or matrix row or column keeps whichever value
+// came last, and a repeated section key merges the two values or keeps only
+// one of them (a later "matrix": null empties the matrix).
+//
+// Checked, by a token-level pass over the raw bytes: the top-level
+// port_color_compatibility key; its port_colors, matrix and port_color_map
+// keys; every port_color_map port; every matrix row; every column of each
+// row. The four named keys match case-insensitively, as json.Unmarshal
+// matches them onto ontologyJSON; ports, rows and columns match exactly.
+// Keys are compared after JSON unescaping. Every other value is skipped
+// unread, so a repeated key anywhere else keeps loading as before, and so
+// does the authored-not-loaded port_color_compatibility.declared_pairs_by_wf
+// (4.0.7 lists its WF06 connects-to/connected-to and WF08 bound-to/binds rows
+// twice, with different colors). A color repeated inside the port_colors
+// array is declaredPortColors' "listed twice" error.
+func checkColorSectionKeys(data []byte) error {
+	var section json.RawMessage
+	first := ""
+	err := eachJSONKey(data, func(key string, val json.RawMessage) error {
+		if !strings.EqualFold(key, "port_color_compatibility") {
+			return nil
+		}
+		if first != "" {
+			return duplicateSectionKey("ontology", key, first)
+		}
+		first, section = key, val
+		return nil
+	})
+	if err != nil || section == nil {
+		return err
+	}
+	seen := make(map[string]string, 3)
+	return eachJSONKey(section, func(key string, val json.RawMessage) error {
+		name := ""
+		for _, loaded := range []string{"port_colors", "matrix", "port_color_map"} {
+			if strings.EqualFold(key, loaded) {
+				name = loaded
+			}
+		}
+		if name == "" {
+			return nil // doc-only sibling (description, declared_pairs_by_wf, …): not loaded, not checked
+		}
+		if prev, ok := seen[name]; ok {
+			return duplicateSectionKey("port_color_compatibility", key, prev)
+		}
+		seen[name] = key
+		switch name {
+		case "port_color_map":
+			return uniqueJSONKeys(val, "port_color_compatibility.port_color_map", "port", nil)
+		case "matrix":
+			return uniqueJSONKeys(val, "port_color_compatibility.matrix", "row", func(row string, cols json.RawMessage) error {
+				return uniqueJSONKeys(cols, fmt.Sprintf("port_color_compatibility.matrix[%q]", row), "column", nil)
+			})
+		}
+		return nil
+	})
+}
+
+// duplicateSectionKey names a repeated section key; a spelling that differs
+// from the first one only in case is named next to it.
+func duplicateSectionKey(section, key, first string) error {
+	if key == first {
+		return fmt.Errorf("operad: %s: duplicate key %q (t342: json.Unmarshal would silently merge the two values or keep only one)", section, key)
+	}
+	return fmt.Errorf("operad: %s: duplicate key %q, the same key as the earlier %q to json.Unmarshal, which matches it case-insensitively (t342: it would silently merge the two values or keep only one)", section, key, first)
+}
+
+// uniqueJSONKeys rejects a repeated key in the JSON object raw, naming the
+// section and the key (what says "port", "row" or "column"). When each is
+// non-nil it is called with every key and value in order.
+func uniqueJSONKeys(raw json.RawMessage, section, what string, each func(key string, val json.RawMessage) error) error {
+	seen := make(map[string]bool)
+	return eachJSONKey(raw, func(key string, val json.RawMessage) error {
+		if seen[key] {
+			return fmt.Errorf("operad: %s: duplicate %s %q (t342: json.Unmarshal would silently keep only the last one)", section, what, key)
+		}
+		seen[key] = true
+		if each != nil {
+			return each(key, val)
+		}
+		return nil
+	})
+}
+
+// eachJSONKey calls f with every key, unescaped and in document order, and
+// the raw value of the JSON object raw. Any other JSON value (null, an
+// array, a scalar) calls f never: json.Unmarshal has already accepted or
+// rejected its type.
+func eachJSONKey(raw json.RawMessage, f func(key string, val json.RawMessage) error) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("operad: scan color section keys: %w", err)
+	}
+	if tok != json.Delim('{') {
+		return nil
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("operad: scan color section keys: %w", err)
+		}
+		key, _ := tok.(string)
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return fmt.Errorf("operad: scan color section keys: %w", err)
+		}
+		if err := f(key, val); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseColorCell maps one JSON matrix cell onto its colorCompat value.
