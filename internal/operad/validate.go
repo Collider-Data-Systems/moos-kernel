@@ -309,7 +309,8 @@ func containsString(list []string, s string) bool {
 //
 // Rules:
 //  1. S4 (Projected) nodes may not be the src of a LINK to S0/S1/S2 nodes.
-//     Projection nodes are read-only toward lower strata (M5).
+//     Projection nodes are read-only toward lower strata (M5). This rule
+//     applies only when both ends of the link have a parseable stratum.
 //  2. If the WF category declares non-empty src_types or tgt_types, the actual
 //     node types must be in those lists. (Previously stubbed — now enforced.)
 //  3. If the LINK matches a declared AdditionalPortPair (not the primary pair),
@@ -329,19 +330,15 @@ func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState
 		return nil // unknown type — already rejected by ValidateADD at creation time
 	}
 
-	srcStratum, err := graph.ParseStratum(srcSpec.Stratum)
-	if err != nil {
-		return nil // unknown stratum — be permissive; operad coverage issue, not a violation
-	}
-	tgtStratum, err := graph.ParseStratum(tgtSpec.Stratum)
-	if err != nil {
-		return nil
-	}
+	srcStratum, srcErr := graph.ParseStratum(srcSpec.Stratum)
+	tgtStratum, tgtErr := graph.ParseStratum(tgtSpec.Stratum)
 
-	// Rule 1: S4 → S0/S1/S2 LINK is forbidden (M5 filtration direction).
-	if srcStratum == graph.S4 && tgtStratum < graph.S3 {
-		return fmt.Errorf("strata(M5): S4 node %s (%s) may not LINK to %s node %s (%s); projection nodes are read-only toward lower strata",
-			env.SrcURN, srcNode.TypeID, tgtSpec.Stratum, env.TgtURN, tgtNode.TypeID)
+	// Rule 1: S4 -> S0/S1/S2 LINK is forbidden (M5 filtration direction).
+	if srcErr == nil && tgtErr == nil {
+		if srcStratum == graph.S4 && tgtStratum < graph.S3 {
+			return fmt.Errorf("strata(M5): S4 node %s (%s) may not LINK to %s node %s (%s); projection nodes are read-only toward lower strata",
+				env.SrcURN, srcNode.TypeID, tgtSpec.Stratum, env.TgtURN, tgtNode.TypeID)
+		}
 	}
 
 	wfSpec, ok := r.RewriteCategories[env.RewriteCategory]

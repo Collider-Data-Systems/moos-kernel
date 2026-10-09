@@ -506,3 +506,65 @@ func TestValidateStrataLink_PrimaryPair_UsesWFLevelTypesOnly(t *testing.T) {
 		t.Errorf("primary-pair LINK with WF-legal types rejected: %v", err)
 	}
 }
+
+// TestValidateStrataLink_UnparseableStratumStillTypeChecked pins that a node
+// type whose stratum does not parse skips only the M5 direction rule (rule 1).
+// The WF-level type lists (rule 2) and the pair-level type lists (rule 3)
+// still apply to every LINK that touches such a type.
+func TestValidateStrataLink_UnparseableStratumStillTypeChecked(t *testing.T) {
+	reg := buildStrataTestRegistry()
+	reg.NodeTypes["governance_proposal"] = NodeTypeSpec{ID: "governance_proposal", Stratum: "S0-S2"} // a range, not a stratum
+	reg.NodeTypes["tool_call"] = NodeTypeSpec{ID: "tool_call"}                                       // stratum absent
+	reg.NodeTypes["s4_fixture"] = NodeTypeSpec{ID: "s4_fixture", Stratum: "S4"}                      // rule-1 control
+
+	state := stateForStrataTest()
+	for _, n := range []graph.Node{
+		{URN: "urn:moos:proposal:t", TypeID: "governance_proposal"},
+		{URN: "urn:moos:tool_call:t", TypeID: "tool_call"},
+		{URN: "urn:moos:s4_fixture:t", TypeID: "s4_fixture"},
+	} {
+		state.Nodes[n.URN] = n
+	}
+
+	cases := []struct {
+		name             string
+		wf               graph.RewriteCategory
+		src, sp, tgt, tp string
+		wantErr          string // "" = admitted
+	}{
+		// Rule 3 (additional pair has-occupant: session -> user|agent).
+		{"pair: unparseable tgt outside pair tgt_types", graph.WF19,
+			"urn:moos:session:t", "has-occupant", "urn:moos:proposal:t", "is-occupant-of", `tgt type "governance_proposal"`},
+		{"pair: absent-stratum src outside pair src_types", graph.WF19,
+			"urn:moos:tool_call:t", "has-occupant", "urn:moos:user:t", "is-occupant-of", `src type "tool_call"`},
+		// Rule 2 (primary pair opens-on: WF19 src/tgt lists).
+		{"wf: unparseable src outside WF src_types", graph.WF19,
+			"urn:moos:proposal:t", "opens-on", "urn:moos:kernel:t", "occupied-by", `src type "governance_proposal"`},
+		{"wf: absent-stratum tgt outside WF tgt_types", graph.WF19,
+			"urn:moos:session:t", "opens-on", "urn:moos:tool_call:t", "occupied-by", `tgt type "tool_call"`},
+		// Positive control: a pair whose tgt_types is ["*"] still admits it.
+		{"pair: wildcard tgt admits unparseable type", graph.WF19,
+			"urn:moos:session:t", "pins-urn", "urn:moos:proposal:t", "pinned-by-session", ""},
+		// Rule-1 control: the restructure keeps the M5 direction check.
+		{"strata: S4 -> S2 still rejected", "WF99",
+			"urn:moos:s4_fixture:t", "x", "urn:moos:session:t", "y", "strata(M5)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := graph.Envelope{
+				RewriteType: graph.LINK, RewriteCategory: c.wf,
+				SrcURN: graph.URN(c.src), SrcPort: c.sp,
+				TgtURN: graph.URN(c.tgt), TgtPort: c.tp,
+			}
+			err := reg.ValidateStrataLink(env, state)
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Fatalf("want admitted, got %v", err)
+			case c.wantErr != "" && err == nil:
+				t.Fatalf("want rejection containing %q, got nil", c.wantErr)
+			case c.wantErr != "" && !strings.Contains(err.Error(), c.wantErr):
+				t.Fatalf("want rejection containing %q, got %v", c.wantErr, err)
+			}
+		})
+	}
+}
