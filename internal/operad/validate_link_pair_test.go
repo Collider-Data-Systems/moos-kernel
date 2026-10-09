@@ -568,3 +568,54 @@ func TestValidateStrataLink_UnparseableStratumStillTypeChecked(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateStrataLink_BothUnparseable_StillTypeChecked(t *testing.T) {
+	reg := buildStrataTestRegistry()
+	reg.NodeTypes["governance_proposal"] = NodeTypeSpec{ID: "governance_proposal", Stratum: "S0-S2"} // a range, not a stratum
+	reg.NodeTypes["tool_call"] = NodeTypeSpec{ID: "tool_call"}                                       // stratum absent
+
+	state := stateForStrataTest()
+	state.Nodes["urn:moos:proposal:t"] = graph.Node{URN: "urn:moos:proposal:t", TypeID: "governance_proposal"}
+	state.Nodes["urn:moos:tool_call:t"] = graph.Node{URN: "urn:moos:tool_call:t", TypeID: "tool_call"}
+
+	// WF19 opens-on expects src: session, kernel, endpoint, workstation. tgt: user, agent.
+	env := graph.Envelope{
+		RewriteType: graph.LINK, RewriteCategory: graph.WF19,
+		SrcURN: "urn:moos:proposal:t", SrcPort: "opens-on",
+		TgtURN: "urn:moos:tool_call:t", TgtPort: "occupied-by",
+	}
+	err := reg.ValidateStrataLink(env, state)
+	if err == nil {
+		t.Fatalf("want rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), `src type "governance_proposal"`) && !strings.Contains(err.Error(), `tgt type "tool_call"`) {
+		t.Fatalf("want rejection containing src or tgt type error, got %v", err)
+	}
+}
+
+func TestValidateStrataLink_S4ToUnparseable_Admitted(t *testing.T) {
+	reg := buildStrataTestRegistry()
+	reg.NodeTypes["s4_fixture"] = NodeTypeSpec{ID: "s4_fixture", Stratum: "S4"} // rule-1 control
+	reg.NodeTypes["tool_call"] = NodeTypeSpec{ID: "tool_call"}                  // stratum absent
+
+	state := stateForStrataTest()
+	state.Nodes["urn:moos:s4_fixture:t"] = graph.Node{URN: "urn:moos:s4_fixture:t", TypeID: "s4_fixture"}
+	state.Nodes["urn:moos:tool_call:t"] = graph.Node{URN: "urn:moos:tool_call:t", TypeID: "tool_call"}
+
+	reg.RewriteCategories[graph.WF19] = RewriteCategorySpec{
+		ID: graph.WF19,
+		AdditionalPortPairs: []AdditionalPortPair{
+			{SrcPort: "x", TgtPort: "y", SrcTypes: []graph.TypeID{"*"}, TgtTypes: []graph.TypeID{"*"}},
+		},
+	}
+
+	env := graph.Envelope{
+		RewriteType: graph.LINK, RewriteCategory: graph.WF19,
+		SrcURN: "urn:moos:s4_fixture:t", SrcPort: "x",
+		TgtURN: "urn:moos:tool_call:t", TgtPort: "y",
+	}
+	err := reg.ValidateStrataLink(env, state)
+	if err != nil {
+		t.Fatalf("want admitted, got %v", err)
+	}
+}
