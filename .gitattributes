@@ -2,3 +2,7 @@
 # golden file raw off disk (replay_fixture_test.go), so a CRLF smudge on
 # autocrlf=true clones fails the byte check while the hash check passes.
 testdata/replay/* -text
+
+# t342: the frozen 98f2ccc port-color table is pinned by sha256
+# (TestLegacyPortColors_FrozenAt98f2ccc); keep it byte-exact too.
+testdata/operad/* -text

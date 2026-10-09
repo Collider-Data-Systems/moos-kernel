@@ -31,7 +31,8 @@ const (
 )
 
 // PortColor classifies a port's semantic domain.
-// The compatibility matrix (§12.2) determines which src→tgt color pairs form valid relations.
+// §12.2 color gate: a LINK is color-valid iff both ports share one color
+// (t342 ruling 1 — strict equality replaced the 8×8 compatibility matrix).
 type PortColor string
 
 const (
@@ -50,15 +51,19 @@ const (
 // It persists until a future UNLINK rewrite removes it.
 // It does not carry messages, invoke methods, or trigger behavior.
 // It is topology — structure that the kernel reads when validating future rewrites.
+//
+// A relation carries no port colors (t342 ruling 6). The former SrcColor /
+// TgtColor fields were never written (fold.applyLINK left them ""), so every
+// relation served src_color="" / tgt_color="", which read like the retired ""
+// exemption. An end's color is derived on demand from the operad's
+// Registry.PortColors by port name — the ontology is the single source.
 type Relation struct {
 	URN             URN             `json:"urn"`
 	RewriteCategory RewriteCategory `json:"rewrite_category"`
 	SrcURN          URN             `json:"src_urn"`
 	SrcPort         string          `json:"src_port"`
-	SrcColor        PortColor       `json:"src_color"`
 	TgtURN          URN             `json:"tgt_urn"`
 	TgtPort         string          `json:"tgt_port"`
-	TgtColor        PortColor       `json:"tgt_color"`
 	// ContractURN is required for WF15 (semantic) relations.
 	ContractURN URN       `json:"contract_urn,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`

@@ -2,28 +2,29 @@ package operad
 
 import "moos/kernel/internal/graph"
 
-// DefaultPortColors is the built-in port-name → color map (§12.1), the
-// kernel-side successor of the former hardcoded portColorFromName switch
-// (moos-kernel#50). It covers every port declared in ontology.json v4.0.1's
-// rewrite_categories (primary pairs + additional_port_pairs), so the §12.2
-// color gate can run fail-closed for WFs with declared pairs.
+// legacyPortColors is the kernel's FROZEN port-name → color table (§12.1),
+// formerly the exported DefaultPortColors (moos-kernel#50).
+//
+// t342 ruling 6 makes the ontology's port_color_compatibility.port_color_map
+// the single source of port colors. An ontology whose own map colors every
+// end of every declared pair is used as-is and this table is not consulted
+// (resolvePortColorSource in loader.go). The table survives only for an
+// ontology whose own map is partial: the fleet's 4.0.7 colors 6 of its 66
+// declared ports and takes the other 60 from here.
+//
+// Frozen at moos-kernel 98f2ccc — it must never grow. A new port gets its
+// color in the ontology's port_color_map, not here. The one change since
+// 98f2ccc is t342 ruling 2: bound-to is topology (diagonal with its pair
+// partner binds) and the "" exemption is gone. TestLegacyPortColors_FrozenAt98f2ccc
+// pins both facts against testdata/operad/kernel-default-port-colors-98f2ccc.json.
+// Delete this table once the fleet loads a self-colored ontology.
 //
 // Color choices are grounded in the ontology's authored intent
 // (port_color_compatibility.declared_pairs_by_wf src_color/tgt_color rows —
 // authored-not-loaded per the 4.0.1 note) where a row exists; ports without
 // an authored row take their WF family's color (e.g. WF19 session-governance
 // pairs → workflow, WF02 delegation → auth, WF20 promotion → auth).
-//
-// An entry mapped to the EMPTY color is an explicit, documented exemption:
-// the port's color is ambiguous by doctrine and the matrix check is skipped
-// for pairs involving it. This is distinct from an ABSENT entry, which the
-// gate treats as unknown and rejects (fail-closed) on declared-pair WFs.
-//
-// ontology.json may override or extend this map via an optional
-// port_color_compatibility.port_color_map object (port name → color name;
-// empty string = exempt). See loader.go. The merged result lives on
-// Registry.PortColors.
-func DefaultPortColors() map[string]graph.PortColor {
+func legacyPortColors() map[string]graph.PortColor {
 	return map[string]graph.PortColor{
 		// auth — governance, delegation, promotion (WF02, WF13, WF20)
 		"governs":          graph.ColorAuth,
@@ -37,7 +38,7 @@ func DefaultPortColors() map[string]graph.PortColor {
 		"promotes":         graph.ColorAuth, // WF20 grammar promotion (family: WF13 auth)
 		"promoted-from":    graph.ColorAuth,
 
-		// topology — ownership, containment, hosting, spanning (WF01, WF03, WF04, WF18.spans)
+		// topology — ownership, containment, hosting, spanning, bound-to/binds (WF01, WF03, WF04, WF08, WF18.spans)
 		"contains":     graph.ColorTopology,
 		"contained-in": graph.ColorTopology,
 		"owns":         graph.ColorTopology,
@@ -46,6 +47,7 @@ func DefaultPortColors() map[string]graph.PortColor {
 		"hosts":        graph.ColorTopology,
 		"hosted-on":    graph.ColorTopology,
 		"binds":        graph.ColorTopology,
+		"bound-to":     graph.ColorTopology, // WF08 pair partner of binds; the "" exemption until t342 ruling 2
 		"spans":        graph.ColorTopology, // WF18 g2 (4.0.1) manifold colimit legs
 		"spanned-by":   graph.ColorTopology,
 
@@ -78,12 +80,6 @@ func DefaultPortColors() map[string]graph.PortColor {
 		"asserted-in":  graph.ColorStorage,
 		"tagged":       graph.ColorStorage,
 		"tagged-in":    graph.ColorStorage,
-
-		// EXPLICIT EXEMPTION — ambiguous compute-or-storage by doctrine
-		// (WF08 bound-to→binds is a declared color crossing: both
-		// compute→topology and storage→topology are true in the matrix).
-		// Empty color = matrix check skipped, deliberately and visibly.
-		"bound-to": "",
 
 		// workflow — session/occupancy/purpose/causality/scheduling
 		// (WF07, WF17, WF18, WF19, WF21)

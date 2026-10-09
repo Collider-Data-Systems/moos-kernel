@@ -69,15 +69,20 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 		}
 	}
 
-	// Port color compatibility (§12.2). FAIL-CLOSED for WFs with declared
-	// pairs (moos-kernel#50): a declared pair whose port lacks a color in
-	// Registry.PortColors is rejected — the map must cover every declared
-	// port (DefaultPortColors does for ontology v4.0.1; later ontologies
-	// extend via port_color_compatibility.port_color_map without a kernel
-	// release). Spec-absent WFs keep the legacy permissive skip, matching
-	// the pair gate above. A port explicitly mapped to the empty color is a
-	// documented exemption (e.g. bound-to, ambiguous compute-or-storage) and
-	// skips the matrix check.
+	// Port color gate (§12.2): a LINK is color-valid iff both ports carry the
+	// SAME color (t342 ruling 1). Strict equality replaced the 8×8 matrix,
+	// which on every declared pair of 4.0.7, 4.0.8 and mtdc-2.0.0 admits
+	// exactly the same LINKs (color_equality_t342_test.go) but was not
+	// transitive under WF15, had a dead projection cell and left semantic as
+	// the bottom of the order. An ontology with no matrix at all (v3.0 at
+	// ffs0 37d07ce), on which the matrix rejected every colored LINK, is
+	// judged by equality too. A future cross-color relation is declared as
+	// its own pair with its own colors, never as a matrix cell; the loaded
+	// matrix is display-only. FAIL-CLOSED for WFs with declared pairs
+	// (moos-kernel#50): a port without a color in Registry.PortColors is
+	// rejected, and no color is exempt any more (t342 ruling 2 retired the
+	// bound-to "" exemption). Spec-absent WFs keep the legacy permissive
+	// skip, matching the pair gate above.
 	srcColor, tgtColor, err := r.resolvePortColors(env.SrcPort, env.TgtPort)
 	if err != nil {
 		if pairsDeclared {
@@ -85,12 +90,9 @@ func (r *Registry) ValidateLINK(env graph.Envelope) error {
 		}
 		return nil
 	}
-	if srcColor == "" || tgtColor == "" {
-		return nil // explicitly exempt port — matrix check skipped by declaration
-	}
-	if !r.PortColorMatrix.Allowed(srcColor, tgtColor, env.RewriteCategory) {
-		return fmt.Errorf("operad: port color incompatibility: %s → %s not allowed under %s (§12.2)",
-			srcColor, tgtColor, env.RewriteCategory)
+	if srcColor != tgtColor {
+		return fmt.Errorf("operad: port color mismatch: %s (%s) → %s (%s) under %s — the color gate admits equal colors only (§12.2, t342 ruling 1)",
+			env.SrcPort, srcColor, env.TgtPort, tgtColor, env.RewriteCategory)
 	}
 	return nil
 }
@@ -219,35 +221,45 @@ func (r *Registry) ValidateUNLINK(env graph.Envelope) error {
 }
 
 // resolvePortColors looks up both port colors from Registry.PortColors —
-// the loader-merged map of DefaultPortColors plus any ontology
-// port_color_compatibility.port_color_map overrides. A nil map (zero-value
-// Registry, partial test fixtures) falls back to DefaultPortColors so bare
-// registries resolve the canonical vocabulary.
+// the loader-built map (the ontology's port_color_map, laid over the frozen
+// legacyPortColors table only when that map is partial; t342 ruling 6). A
+// nil map (zero-value Registry, partial test fixtures) falls back to
+// legacyPortColors so bare registries resolve the canonical vocabulary.
 //
-// Three outcomes per port:
-//   - present with a color: returned for the §12.2 matrix check
-//   - present with the EMPTY color: explicit exemption — returned as "" with
-//     nil error; the caller skips the matrix check (e.g. bound-to)
-//   - absent: error naming the port — ValidateLINK rejects (fail-closed) on
-//     WFs with declared pairs (moos-kernel#50)
+// Two outcomes per port:
+//   - present with a color: returned for the §12.2 equality check
+//   - absent, or present with the EMPTY color: error naming the port —
+//     ValidateLINK rejects (fail-closed) on WFs with declared pairs
+//     (moos-kernel#50). An empty color is no longer an exemption (t342
+//     ruling 2); the loader refuses "" so only a hand-built registry can
+//     carry one.
 func (r *Registry) resolvePortColors(srcPort, tgtPort string) (graph.PortColor, graph.PortColor, error) {
 	colors := r.PortColors
 	if colors == nil {
-		colors = DefaultPortColors()
+		colors = legacyPortColors()
 	}
 	srcColor, srcOk := colors[srcPort]
 	tgtColor, tgtOk := colors[tgtPort]
-	if !srcOk || !tgtOk {
+	if !srcOk || !tgtOk || srcColor == "" || tgtColor == "" {
 		missing := make([]string, 0, 2)
-		if !srcOk {
-			missing = append(missing, fmt.Sprintf("src %q", srcPort))
+		if !srcOk || srcColor == "" {
+			missing = append(missing, describeUncolored("src", srcPort, srcOk))
 		}
-		if !tgtOk {
-			missing = append(missing, fmt.Sprintf("tgt %q", tgtPort))
+		if !tgtOk || tgtColor == "" {
+			missing = append(missing, describeUncolored("tgt", tgtPort, tgtOk))
 		}
 		return "", "", fmt.Errorf("no declared color for port %s (§12.1)", strings.Join(missing, ", "))
 	}
 	return srcColor, tgtColor, nil
+}
+
+// describeUncolored names one uncolored port side for resolvePortColors.
+// A present-but-empty entry says so: it used to be the exemption.
+func describeUncolored(side, port string, present bool) string {
+	if present {
+		return fmt.Sprintf("%s %q (empty color — no longer an exemption, t342 ruling 2)", side, port)
+	}
+	return fmt.Sprintf("%s %q", side, port)
 }
 
 // checkAuthority checks whether the actor satisfies the required authority scope.
