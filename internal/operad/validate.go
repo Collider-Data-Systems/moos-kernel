@@ -313,12 +313,9 @@ func containsString(list []string, s string) bool {
 //  2. If the WF category declares non-empty src_types or tgt_types, the actual
 //     node types must be in those lists. (Previously stubbed — now enforced.)
 //  3. If the LINK matches a declared AdditionalPortPair (not the primary pair),
-//     and that pair carries non-empty SrcTypes/TgtTypes restrictions, the actual
-//     node types must additionally satisfy the pair-level restriction. The
-//     ontology uses this to narrow an extension pair below the WF's overall
-//     src/tgt lists — e.g. WF19's has-occupant pair restricts to session→
-//     (user|agent|group) even though WF19 itself accepts session|agent|agent_session
-//     as sources and a broader tgt_types list. (T=171 round 11 PR 1.)
+//     the pair's own SrcTypes/TgtTypes replace the WF-level lists. ["*"]
+//     admits every type. Empty lists are rejected at load, so only a hand-built
+//     registry can carry an empty list.
 func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState) error {
 	srcNode, srcOk := state.Nodes[env.SrcURN]
 	tgtNode, tgtOk := state.Nodes[env.TgtURN]
@@ -363,11 +360,11 @@ func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState
 
 	if !isAdditional {
 		// Rule 2: WF-level src_types / tgt_types enforcement (primary-pair LINKs).
-		if len(wfSpec.SrcTypes) > 0 && !containsTypeID(wfSpec.SrcTypes, srcNode.TypeID) {
+		if len(wfSpec.SrcTypes) > 0 && !typeAllowed(wfSpec.SrcTypes, srcNode.TypeID) {
 			return fmt.Errorf("operad: src type %q not in allowed list for %s: %v",
 				srcNode.TypeID, env.RewriteCategory, wfSpec.SrcTypes)
 		}
-		if len(wfSpec.TgtTypes) > 0 && !containsTypeID(wfSpec.TgtTypes, tgtNode.TypeID) {
+		if len(wfSpec.TgtTypes) > 0 && !typeAllowed(wfSpec.TgtTypes, tgtNode.TypeID) {
 			return fmt.Errorf("operad: tgt type %q not in allowed list for %s: %v",
 				tgtNode.TypeID, env.RewriteCategory, wfSpec.TgtTypes)
 		}
@@ -375,23 +372,22 @@ func (r *Registry) ValidateStrataLink(env graph.Envelope, state graph.GraphState
 	}
 
 	// Rule 3: pair-level src_types/tgt_types enforcement (additional-pair LINKs).
-	// A tgt_types entry of "*" is a wildcard per the ontology convention (see
-	// WF19.pins-urn in ontology.json v3.12): any tgt type passes.
-	if len(pair.SrcTypes) > 0 && !containsTypeID(pair.SrcTypes, srcNode.TypeID) {
+	// A src_types or tgt_types entry of "*" is a wildcard per the ontology convention (see
+	// WF19.pins-urn in ontology.json v3.12): any type passes.
+	if len(pair.SrcTypes) > 0 && !typeAllowed(pair.SrcTypes, srcNode.TypeID) {
 		return fmt.Errorf("operad: src type %q not allowed on pair (%s, %s) of %s: %v",
 			srcNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.SrcTypes)
 	}
-	if len(pair.TgtTypes) > 0 && !containsTypeID(pair.TgtTypes, "*") &&
-		!containsTypeID(pair.TgtTypes, tgtNode.TypeID) {
+	if len(pair.TgtTypes) > 0 && !typeAllowed(pair.TgtTypes, tgtNode.TypeID) {
 		return fmt.Errorf("operad: tgt type %q not allowed on pair (%s, %s) of %s: %v",
 			tgtNode.TypeID, env.SrcPort, env.TgtPort, env.RewriteCategory, pair.TgtTypes)
 	}
 	return nil
 }
 
-func containsTypeID(list []graph.TypeID, id graph.TypeID) bool {
-	for _, v := range list {
-		if v == id {
+func typeAllowed(types []graph.TypeID, ty graph.TypeID) bool {
+	for _, v := range types {
+		if v == "*" || v == ty {
 			return true
 		}
 	}

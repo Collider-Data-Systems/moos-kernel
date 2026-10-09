@@ -21,7 +21,7 @@ import (
 // portsWFs exercises every generation rule, in declaration order:
 //
 //	P1 WF03 hosts→hosted-on            src [a]    tgt [b, c]
-//	P2 WF07 participates→participated-by src [d]  tgt [] (every type)
+//	P2 WF07 participates→participated-by src [d]  tgt ["*"] (every type)
 //	P3 WF07 anchors→anchor (additional) src [c]   tgt ["*"]
 //	—  WF15 {semantic}→{semantic}       placeholder, skipped
 //	P5 WF19 pins-urn→pinned-by-session (additional only) src [a] tgt ["*"]
@@ -29,7 +29,7 @@ import (
 //	P7 WF98 hosts→hosted-on             src [c]    tgt [a]  (repeated names)
 const portsWFs = `[
 	{"id": "WF03", "allowed_rewrites": ["LINK"], "src_types": ["a"], "tgt_types": ["b", "c"], "src_port": "hosts", "tgt_port": "hosted-on"},
-	{"id": "WF07", "allowed_rewrites": ["LINK"], "src_types": ["d"], "src_port": "participates", "tgt_port": "participated-by",
+	{"id": "WF07", "allowed_rewrites": ["LINK"], "src_types": ["d"], "tgt_types": ["*"], "src_port": "participates", "tgt_port": "participated-by",
 	 "additional_port_pairs": [{"src_port": "anchors", "tgt_port": "anchor", "src_types": ["c"], "tgt_types": ["*"]}]},
 	{"id": "WF15", "allowed_rewrites": ["LINK"], "src_types": ["*"], "tgt_types": ["*"], "src_port": "{semantic}", "tgt_port": "{semantic}"},
 	{"id": "WF19", "allowed_rewrites": ["LINK"],

@@ -116,8 +116,7 @@ type RewriteCategorySpec struct {
 // pins-urn, D19.4 filtered-by, D20.1 mounts-tool) for §M18-§M20 workspace shape.
 //
 // Loader consumes these into the registry so ValidateLINK can accept any
-// declared pair for the WF. SrcTypes/TgtTypes, when non-empty, further restrict
-// the pair to specific node types — empty means the WF's top-level lists apply.
+// declared pair for the WF. For LINKs on this pair, SrcTypes/TgtTypes replace the WF-level lists (no fallback). ["*"] admits every type. LoadRegistry rejects empty, null, absent or mixed lists, so only a hand-built registry can carry an empty list, which admits every type.
 type AdditionalPortPair struct {
 	SrcPort          string
 	TgtPort          string

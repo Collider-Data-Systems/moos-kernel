@@ -60,6 +60,15 @@ func LoadRegistry(path string) (*Registry, error) {
 		for _, rt := range wf.AllowedRewrites {
 			spec.AllowedRewrites = append(spec.AllowedRewrites, graph.RewriteType(rt))
 		}
+		if wf.SrcPort != "" || wf.TgtPort != "" {
+			pairLabel := fmt.Sprintf("primary pair (%s, %s)", wf.SrcPort, wf.TgtPort)
+			if err := validateTypeList(wf.ID, pairLabel, "src_types", wf.SrcTypes); err != nil {
+				return nil, err
+			}
+			if err := validateTypeList(wf.ID, pairLabel, "tgt_types", wf.TgtTypes); err != nil {
+				return nil, err
+			}
+		}
 		for _, t := range wf.SrcTypes {
 			spec.SrcTypes = append(spec.SrcTypes, graph.TypeID(t))
 		}
@@ -86,6 +95,13 @@ func LoadRegistry(path string) (*Registry, error) {
 				AddedInVersion:   app.AddedInVersion,
 				PromotesFragment: app.PromotesFragment,
 				Description:      app.Description,
+			}
+			pairLabel := fmt.Sprintf("additional pair (%s, %s)", app.SrcPort, app.TgtPort)
+			if err := validateTypeList(wf.ID, pairLabel, "src_types", app.SrcTypes); err != nil {
+				return nil, err
+			}
+			if err := validateTypeList(wf.ID, pairLabel, "tgt_types", app.TgtTypes); err != nil {
+				return nil, err
 			}
 			for i, t := range app.SrcTypes {
 				pair.SrcTypes[i] = graph.TypeID(t)
@@ -671,4 +687,21 @@ type rawPortColorCompat struct {
 	// (description, projection_rule, semantic_rule, declared_pairs_by_wf)
 	// remain doc-only and unloaded.
 	PortColorMap map[string]*string `json:"port_color_map"`
+}
+
+func validateTypeList(wfID string, pairLabel string, key string, types []string) error {
+	if len(types) == 0 {
+		return fmt.Errorf("operad: %s %s: %s is empty or missing — list the admitted types, or [\"*\"] for all types", wfID, pairLabel, key)
+	}
+	hasStar := false
+	for _, t := range types {
+		if t == "*" {
+			hasStar = true
+			break
+		}
+	}
+	if hasStar && len(types) > 1 {
+		return fmt.Errorf("operad: %s %s: %s cannot mix '*' wildcard with other types", wfID, pairLabel, key)
+	}
+	return nil
 }
