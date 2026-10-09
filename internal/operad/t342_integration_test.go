@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -21,7 +22,36 @@ import (
 //	MOOS_T342_408=<ontology-4.0.8.json>        a legacy-merge ontology
 //	MOOS_T342_LOG=<log.jsonl> MOOS_T342_LOG_ONTOLOGY=<ontology.json>
 //	  [MOOS_T342_LOG_EXPECT=links/admitted/pair-rejected]  shadow replay
+//
+// The frozen 98f2ccc ValidateLINK is the oracle only where it means
+// something (t342, Copilot #80 (5)): a legacy-merge ontology, whose colors
+// still partly come from the frozen table, and the pinned versions the t342
+// neutrality proof ran on. A self-colored ontology outside that set takes
+// every color from its own port_color_map, so 98f2ccc's table and matrix
+// cells say nothing about it: it gets the production-only check instead —
+// every declared pair admitted by ValidateLINK, every color its own.
 // ------------------------------------------------------------------
+
+// t342OraclePinned are the versions the t342 neutrality proof compared
+// against the frozen 98f2ccc gate (PR #80): the fleet's 4.0.7, 4.0.8, and
+// the self-colored mtdc-2.0.0 and mtdc-2.1.0. The set never grows; a later
+// ontology is compared with 98f2ccc only while it is a legacy merge.
+var t342OraclePinned = map[string]bool{"4.0.7": true, "4.0.8": true, "mtdc-2.0.0": true, "mtdc-2.1.0": true}
+
+// frozenOracleApplies reports whether a loaded ontology is compared with
+// the frozen 98f2ccc ValidateLINK: a legacy-merge registry or a pinned
+// version (t342, Copilot #80 (5)).
+func frozenOracleApplies(reg *Registry) bool {
+	return reg.PortColorSource == PortColorSourceLegacyMerge || t342OraclePinned[reg.Version]
+}
+
+// oracleMode names the check frozenOracleApplies picks, for test logs.
+func oracleMode(reg *Registry) string {
+	if frozenOracleApplies(reg) {
+		return "98f2ccc oracle"
+	}
+	return "production-only"
+}
 
 // rawColorSection reads an ontology's own port_color_map, matrix and types
 // straight from the file, bypassing the loader.
@@ -86,21 +116,61 @@ func legacyValidateLINK98f2ccc(reg *Registry, oldColors map[string]string, env g
 	return legacyColorStage98f2ccc(oldColors, reg.PortColorMatrix, pairsDeclared, env.RewriteCategory, env.SrcPort, env.TgtPort)
 }
 
-// assertDeclaredPairsNeutral runs every declared pair of a loaded real
-// ontology through the oracle and the production gate.
-func assertDeclaredPairsNeutral(t *testing.T, reg *Registry, own map[string]string) int {
+// declaredPairProblems runs every declared pair of a loaded real ontology
+// through the check frozenOracleApplies picks and returns the pair count and
+// one line per problem, sorted. Under the oracle the frozen 98f2ccc
+// ValidateLINK and the production one must both admit. Otherwise
+// (production-only, t342, Copilot #80 (5)) the production ValidateLINK must
+// admit, the color source must be the ontology, and the served colors must
+// be exactly the ontology's own map — no frozen-table color anywhere.
+func declaredPairProblems(t *testing.T, reg *Registry, own map[string]string) (int, []string) {
 	t.Helper()
-	old := oldMergedColors(t, own)
+	var old map[string]string
+	if frozenOracleApplies(reg) {
+		old = oldMergedColors(t, own)
+	}
+	var problems []string
 	n := 0
 	for wf, spec := range reg.RewriteCategories {
 		for _, pr := range declaredPairs(spec) {
 			n++
 			env := linkEnvelope(declaredPair{wf, pr[0], pr[1]})
-			oracle, got := legacyValidateLINK98f2ccc(reg, old, env), reg.ValidateLINK(env)
-			if oracle != nil || got != nil {
-				t.Errorf("%s (%s, %s): 98f2ccc %v, t342 %v — want both to admit", wf, pr[0], pr[1], oracle, got)
+			got := reg.ValidateLINK(env)
+			if old != nil {
+				if oracle := legacyValidateLINK98f2ccc(reg, old, env); oracle != nil || got != nil {
+					problems = append(problems, fmt.Sprintf("%s (%s, %s): 98f2ccc %v, t342 %v — want both to admit", wf, pr[0], pr[1], oracle, got))
+				}
+				continue
+			}
+			if got != nil {
+				problems = append(problems, fmt.Sprintf("%s (%s, %s): t342 %v — want admitted", wf, pr[0], pr[1], got))
 			}
 		}
+	}
+	if old == nil {
+		if reg.PortColorSource != PortColorSourceOntology {
+			problems = append(problems, fmt.Sprintf("color source %q, want %q", reg.PortColorSource, PortColorSourceOntology))
+		}
+		if len(reg.PortColors) != len(own) {
+			problems = append(problems, fmt.Sprintf("%d served colors, the ontology's own map has %d", len(reg.PortColors), len(own)))
+		}
+		for port, c := range reg.PortColors {
+			if want, ok := own[port]; !ok || string(c) != want {
+				problems = append(problems, fmt.Sprintf("port %q served %q, the ontology's own map %q", port, c, want))
+			}
+		}
+	}
+	sort.Strings(problems)
+	return n, problems
+}
+
+// assertDeclaredPairsAdmitted reports declaredPairProblems as test errors
+// and returns the declared pair count.
+func assertDeclaredPairsAdmitted(t *testing.T, reg *Registry, own map[string]string) int {
+	t.Helper()
+	n, problems := declaredPairProblems(t, reg, own)
+	for _, p := range problems {
+		t.Error(p)
 	}
 	return n
 }
@@ -129,9 +199,9 @@ func TestIntegration_T342_FleetOntology(t *testing.T) {
 	if strings.Contains(logged, "WARNING — color gate") || strings.Contains(logged, "have no color") {
 		t.Errorf("the fleet ontology must load without color-gate or coverage warnings; got %q", logged)
 	}
-	n := assertDeclaredPairsNeutral(t, reg, raw.PortColorCompatibility.PortColorMap)
-	t.Logf("%s (%s): source %s, %d declared pairs neutral, ports generated=%v drift types=%d",
-		path, reg.Version, reg.PortColorSource, n, reg.PortsGenerated, len(reg.PortsDrift))
+	n := assertDeclaredPairsAdmitted(t, reg, raw.PortColorCompatibility.PortColorMap)
+	t.Logf("%s (%s): source %s, %d declared pairs admitted (%s), ports generated=%v drift types=%d",
+		path, reg.Version, reg.PortColorSource, n, oracleMode(reg), reg.PortsGenerated, len(reg.PortsDrift))
 
 	if reg.PortColorSource == PortColorSourceLegacyMerge {
 		old := oldMergedColors(t, raw.PortColorCompatibility.PortColorMap)
@@ -183,9 +253,11 @@ func TestIntegration_T342_FleetOntology(t *testing.T) {
 // TestIntegration_T342_MTDC: a self-colored mtdc candidate. Mode-only
 // assertions for any version: its own map is the only color source, its
 // ports are generated with zero drift and equal the authored blocks for every
-// type, its matrix is the identity, and every declared pair is neutral. The
-// mtdc-2.0.0 numbers (114 entries, 45 and 46 pairs, 56 types) apply only to
-// that file, so later candidates (mtdc-2.1.0) run the same checks.
+// type, a shipped matrix is the identity, and every declared pair is
+// admitted — against the frozen 98f2ccc oracle for the pinned mtdc-2.0.0 and
+// mtdc-2.1.0, by production alone for any later version (t342, Copilot #80
+// (5)). The mtdc-2.0.0 numbers (114 entries, 45 and 46 pairs, 56 types)
+// apply only to that file.
 func TestIntegration_T342_MTDC(t *testing.T) {
 	path := os.Getenv("MOOS_T342_MTDC")
 	if path == "" {
@@ -213,14 +285,19 @@ func TestIntegration_T342_MTDC(t *testing.T) {
 	if want := mtdcPortColorMap(); v200 && !reflect.DeepEqual(raw.PortColorCompatibility.PortColorMap, want) {
 		t.Errorf("the file's map differs from the hermetic mtdcPortColorMap table")
 	}
-	for _, r := range kernelPortColors {
-		for _, c := range kernelPortColors {
-			want := compatFalse
-			if r == c {
-				want = compatAllowed
-			}
-			if got := reg.PortColorMatrix[r][c]; got != want {
-				t.Errorf("matrix[%s][%s] = %q, want %q (identity)", r, c, got, want)
+	// The color gate is equality (t342 ruling 1): a later candidate may drop
+	// the display-only matrix; a pinned version, or one that ships a matrix,
+	// must carry the identity (t342, Copilot #80 (5)).
+	if t342OraclePinned[reg.Version] || len(raw.PortColorCompatibility.Matrix) > 0 {
+		for _, r := range kernelPortColors {
+			for _, c := range kernelPortColors {
+				want := compatFalse
+				if r == c {
+					want = compatAllowed
+				}
+				if got := reg.PortColorMatrix[r][c]; got != want {
+					t.Errorf("matrix[%s][%s] = %q, want %q (identity)", r, c, got, want)
+				}
 			}
 		}
 	}
@@ -252,12 +329,12 @@ func TestIntegration_T342_MTDC(t *testing.T) {
 	ids := registryTypeOrder(raw)
 	assertPortsProperty(t, ids, raw.RewriteCategories, generateTypePorts(ids, raw.RewriteCategories))
 
-	n := assertDeclaredPairsNeutral(t, reg, raw.PortColorCompatibility.PortColorMap)
+	n := assertDeclaredPairsAdmitted(t, reg, raw.PortColorCompatibility.PortColorMap)
 	if v200 && n != 46 {
 		t.Errorf("mtdc-2.0.0: %d declared pairs, want 46", n)
 	}
-	t.Logf("%s (%s): single source %d entries, ports generated for %d types, %d declared pairs neutral",
-		path, reg.Version, own, types, n)
+	t.Logf("%s (%s): single source %d entries, ports generated for %d types, %d declared pairs admitted (%s)",
+		path, reg.Version, own, types, n, oracleMode(reg))
 }
 
 // TestIntegration_T342_408: 4.0.8 (20-entry own map) is a legacy merge and
@@ -275,14 +352,16 @@ func TestIntegration_T342_408(t *testing.T) {
 	if !reflect.DeepEqual(raw.PortColorCompatibility.PortColorMap, overrides408()) {
 		t.Errorf("the file's map differs from the hermetic overrides408 table")
 	}
-	if n := assertDeclaredPairsNeutral(t, reg, raw.PortColorCompatibility.PortColorMap); n != 43 {
+	if n := assertDeclaredPairsAdmitted(t, reg, raw.PortColorCompatibility.PortColorMap); n != 43 {
 		t.Errorf("%d declared pairs, want 43", n)
 	}
 }
 
 // TestIntegration_T342_ShadowLog replays every LINK envelope of a real log
 // through the frozen 98f2ccc ValidateLINK and the t342 one and requires the
-// same verdict and the same message on each. Not possible through a lab
+// same verdict and the same message on each — for a legacy-merge or pinned
+// ontology; any other is replayed through production alone and only counted
+// (frozenOracleApplies, t342, Copilot #80 (5)). Not possible through a lab
 // kernel's HTTP surface without writing, so it runs here.
 func TestIntegration_T342_ShadowLog(t *testing.T) {
 	logPath, ontPath := os.Getenv("MOOS_T342_LOG"), os.Getenv("MOOS_T342_LOG_ONTOLOGY")
@@ -291,7 +370,12 @@ func TestIntegration_T342_ShadowLog(t *testing.T) {
 	}
 	reg, _ := loadWithLog(t, ontPath)
 	raw := readRawColorSection(t, ontPath)
-	old := oldMergedColors(t, raw.PortColorCompatibility.PortColorMap)
+	// Outside frozenOracleApplies the replay is production-only: verdicts
+	// are counted, not compared (t342, Copilot #80 (5)).
+	var old map[string]string
+	if frozenOracleApplies(reg) {
+		old = oldMergedColors(t, raw.PortColorCompatibility.PortColorMap)
+	}
 
 	f, err := os.Open(logPath)
 	if err != nil {
@@ -316,12 +400,14 @@ func TestIntegration_T342_ShadowLog(t *testing.T) {
 			continue
 		}
 		links++
-		oracle, got := legacyValidateLINK98f2ccc(reg, old, pr.Envelope), reg.ValidateLINK(pr.Envelope)
-		if fmt.Sprint(oracle) != fmt.Sprint(got) {
-			diffs++
-			t.Errorf("log_seq %d %s %s (%s, %s): 98f2ccc %v | t342 %v", pr.LogSeq, pr.Envelope.RelationURN,
-				pr.Envelope.RewriteCategory, pr.Envelope.SrcPort, pr.Envelope.TgtPort, oracle, got)
-			continue
+		got := reg.ValidateLINK(pr.Envelope)
+		if old != nil {
+			if oracle := legacyValidateLINK98f2ccc(reg, old, pr.Envelope); fmt.Sprint(oracle) != fmt.Sprint(got) {
+				diffs++
+				t.Errorf("log_seq %d %s %s (%s, %s): 98f2ccc %v | t342 %v", pr.LogSeq, pr.Envelope.RelationURN,
+					pr.Envelope.RewriteCategory, pr.Envelope.SrcPort, pr.Envelope.TgtPort, oracle, got)
+				continue
+			}
 		}
 		switch {
 		case got == nil:
@@ -337,8 +423,12 @@ func TestIntegration_T342_ShadowLog(t *testing.T) {
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan %s: %v", logPath, err)
 	}
-	t.Logf("shadow %s × %s (%s): %d entries, %d LINKs, %d admitted by both, %d rejected by both at the pair gate, %d rejected by both elsewhere, %d differences",
-		logPath, ontPath, reg.Version, entries, links, admitted, pairRejected, otherRejected, diffs)
+	compared := fmt.Sprintf("%d differences", diffs)
+	if old == nil {
+		compared = "not compared with 98f2ccc"
+	}
+	t.Logf("shadow %s × %s (%s, %s): %d entries, %d LINKs, %d admitted, %d rejected at the pair gate, %d rejected elsewhere, %s",
+		logPath, ontPath, reg.Version, oracleMode(reg), entries, links, admitted, pairRejected, otherRejected, compared)
 	t.Logf("shadow rejection breakdown: %v", reasons)
 	if want := os.Getenv("MOOS_T342_LOG_EXPECT"); want != "" {
 		if got := fmt.Sprintf("%d/%d/%d", links, admitted, pairRejected); got != want {
