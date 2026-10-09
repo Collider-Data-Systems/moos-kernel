@@ -14,7 +14,7 @@ func TestValidBearer(t *testing.T) {
 	}{
 		{"Bearer s3cret", "s3cret", true},
 		{"bearer s3cret", "s3cret", true},   // scheme is case-insensitive
-		{"Bearer  s3cret ", "s3cret", true},  // surrounding whitespace trimmed
+		{"Bearer  s3cret ", "s3cret", true}, // surrounding whitespace trimmed
 		{"Bearer wrong", "s3cret", false},
 		{"s3cret", "s3cret", false}, // missing scheme
 		{"", "s3cret", false},

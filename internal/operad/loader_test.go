@@ -233,7 +233,7 @@ func TestLoadRegistry_UncoveredDeclaredPort_WarnsButBoots(t *testing.T) {
 		"types": {"s2_infrastructure": [], "s1_grammar": [], "interaction_nodes": []},
 		"rewrite_categories": [
 			{"id": "WF98", "name": "Future category", "allowed_rewrites": ["LINK"],
-			 "src_port": "future-src", "tgt_port": "future-tgt"}
+			 "src_types": ["*"], "tgt_types": ["*"], "src_port": "future-src", "tgt_port": "future-tgt"}
 		],
 		"port_color_compatibility": {"matrix": {}}
 	}`)

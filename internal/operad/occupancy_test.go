@@ -29,8 +29,9 @@ func TestPortColor_HasOccupant(t *testing.T) {
 // --------------------------------------------------------------------
 
 // stateWithOccupancy builds a state with:
-//   session sam.hp-laptop --has-occupant--> user:sam
-//   (separately) session sam.idle (no has-occupant relation)
+//
+//	session sam.hp-laptop --has-occupant--> user:sam
+//	(separately) session sam.idle (no has-occupant relation)
 func stateWithOccupancy() graph.GraphState {
 	return graph.GraphState{
 		Nodes: map[graph.URN]graph.Node{

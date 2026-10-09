@@ -295,7 +295,7 @@ func explicitCrosswalkPairs(state graph.GraphState) map[string]struct{} {
 		}
 		srcNode, srcOk := state.Nodes[rel.SrcURN]
 		tgtNode, tgtOk := state.Nodes[rel.TgtURN]
-		
+
 		var srcPtr, tgtPtr *graph.Node
 		if srcOk {
 			srcPtr = &srcNode

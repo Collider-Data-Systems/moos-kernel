@@ -239,27 +239,31 @@ func legacyColorStage98f2ccc(colors map[string]string, matrix PortColorMatrix, p
 func tableOntology(t *testing.T, version string, pairs []declaredPair, own map[string]string, matrix map[string]map[string]any) string {
 	t.Helper()
 	type rawPair struct {
-		Src string `json:"src_port"`
-		Tgt string `json:"tgt_port"`
+		Src      string   `json:"src_port"`
+		Tgt      string   `json:"tgt_port"`
+		SrcTypes []string `json:"src_types"`
+		TgtTypes []string `json:"tgt_types"`
 	}
 	type rawWF struct {
-		ID      string    `json:"id"`
-		Allowed []string  `json:"allowed_rewrites"`
-		Src     string    `json:"src_port"`
-		Tgt     string    `json:"tgt_port"`
-		Add     []rawPair `json:"additional_port_pairs,omitempty"`
+		ID       string    `json:"id"`
+		Allowed  []string  `json:"allowed_rewrites"`
+		Src      string    `json:"src_port"`
+		Tgt      string    `json:"tgt_port"`
+		SrcTypes []string  `json:"src_types"`
+		TgtTypes []string  `json:"tgt_types"`
+		Add      []rawPair `json:"additional_port_pairs,omitempty"`
 	}
 	var wfs []*rawWF
 	byID := map[graph.RewriteCategory]*rawWF{}
 	for _, p := range pairs {
 		w, ok := byID[p.wf]
 		if !ok {
-			w = &rawWF{ID: string(p.wf), Allowed: []string{"LINK", "UNLINK"}, Src: p.src, Tgt: p.tgt}
+			w = &rawWF{ID: string(p.wf), Allowed: []string{"LINK", "UNLINK"}, Src: p.src, Tgt: p.tgt, SrcTypes: []string{"*"}, TgtTypes: []string{"*"}}
 			byID[p.wf] = w
 			wfs = append(wfs, w)
 			continue
 		}
-		w.Add = append(w.Add, rawPair{p.src, p.tgt})
+		w.Add = append(w.Add, rawPair{Src: p.src, Tgt: p.tgt, SrcTypes: []string{"*"}, TgtTypes: []string{"*"}})
 	}
 	body, err := json.Marshal(map[string]any{
 		"version":            version,

@@ -155,9 +155,9 @@ func SweepOnce(state graph.GraphState, currentT int, actor graph.URN, baseLogSeq
 // stageHookProposalPair builds the atomic two-envelope staging shape for a
 // firing t_hook:
 //
-//	1. ADD    a governance_proposal node (title, status=pending,
-//	          source_t_hook_urn, fires_at_t, proposed_envelope, owner_urn)
-//	2. MUTATE the source hook's firing_state → "proposed"
+//  1. ADD    a governance_proposal node (title, status=pending,
+//     source_t_hook_urn, fires_at_t, proposed_envelope, owner_urn)
+//  2. MUTATE the source hook's firing_state → "proposed"
 //
 // Shared by the TIME sweep (SweepOnce) and the M6 event pathway
 // (Runtime.stageEventHookLocked) — governance parity by construction

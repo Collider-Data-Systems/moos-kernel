@@ -21,8 +21,8 @@ import (
 // (plus extra, when given) and the given own port_color_map.
 func sourceOntology(colorMap, extraWFs string) string {
 	wfs := `[
-		{"id": "WF03", "allowed_rewrites": ["LINK"], "src_port": "hosts", "tgt_port": "hosted-on"},
-		{"id": "WF19", "allowed_rewrites": ["LINK"], "src_port": "opens-on", "tgt_port": "occupied-by"}` + extraWFs + `
+		{"id": "WF03", "allowed_rewrites": ["LINK"], "src_types": ["*"], "tgt_types": ["*"], "src_port": "hosts", "tgt_port": "hosted-on"},
+		{"id": "WF19", "allowed_rewrites": ["LINK"], "src_types": ["*"], "tgt_types": ["*"], "src_port": "opens-on", "tgt_port": "occupied-by"}` + extraWFs + `
 	]`
 	return colorSectionOntology(`{"matrix": {}, "port_color_map": `+colorMap+`}`, wfs)
 }
@@ -86,7 +86,7 @@ func TestLoadRegistry_PartialOwnMapIsLegacyMerge_t342(t *testing.T) {
 		{"three of four", `{"hosts": "topology", "hosted-on": "topology", "opens-on": "workflow"}`, "", "3", "4"},
 		{"complete except {semantic}",
 			`{"hosts": "topology", "hosted-on": "topology", "opens-on": "workflow", "occupied-by": "workflow"}`,
-			`, {"id": "WF15", "allowed_rewrites": ["LINK"], "src_port": "{semantic}", "tgt_port": "{semantic}"}`,
+			`, {"id": "WF15", "allowed_rewrites": ["LINK"], "src_types": ["*"], "tgt_types": ["*"], "src_port": "{semantic}", "tgt_port": "{semantic}"}`,
 			"4", "5"},
 	}
 	for _, c := range cases {
@@ -180,8 +180,8 @@ func TestLoadRegistry_ColorGateReport_t342(t *testing.T) {
 	logged := captureLog(t, func() {
 		_, err = LoadRegistry(writeOntology(t, colorSectionOntology(
 			`{"matrix": {"auth": {"auth": true, "topology": true}, "workflow": {"workflow": false}}}`,
-			`[{"id": "WF96", "allowed_rewrites": ["LINK"], "src_port": "governs", "tgt_port": "hosted-on"},
-			  {"id": "WF19", "allowed_rewrites": ["LINK"], "src_port": "opens-on", "tgt_port": "occupied-by"}]`)))
+			`[{"id": "WF96", "allowed_rewrites": ["LINK"], "src_types": ["*"], "tgt_types": ["*"], "src_port": "governs", "tgt_port": "hosted-on"},
+			  {"id": "WF19", "allowed_rewrites": ["LINK"], "src_types": ["*"], "tgt_types": ["*"], "src_port": "opens-on", "tgt_port": "occupied-by"}]`)))
 	})
 	if err != nil {
 		t.Fatalf("the color-gate report must never fail the load: %v", err)

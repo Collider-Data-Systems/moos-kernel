@@ -10,9 +10,9 @@ package graph
 // indexes so hot paths (sweep, t-cone, occupancy walks) don't pay O(N) or
 // O(R) scans on every call:
 //
-//   NodesByType      — for "give me all t_hooks" / "all governance_proposals"
-//   RelationsBySrc   — for "what does session X point at?" (has-occupant walk)
-//   RelationsByTgt   — for "who points at this role?" (governed-by walk)
+//	NodesByType      — for "give me all t_hooks" / "all governance_proposals"
+//	RelationsBySrc   — for "what does session X point at?" (has-occupant walk)
+//	RelationsByTgt   — for "who points at this role?" (governed-by walk)
 //
 // Indexes are derived from Nodes/Relations — they are NOT serialized (the
 // JSON wire shape stays (nodes, relations) for backward compatibility with

@@ -102,7 +102,7 @@ func TestLoadRegistry_ColorClosure_Rejections_t342(t *testing.T) {
 			// projection, which this ontology's vocabulary does not declare.
 			name:    "legacy color at a declared port outside port_colors",
 			section: `{"port_colors": ["auth", "topology", "transport", "compute", "storage", "workflow", "semantic"], "matrix": {}}`,
-			wfs:     `[{"id": "WF16", "allowed_rewrites": ["LINK"], "src_port": "projected-to", "tgt_port": "rendered-as"}]`,
+			wfs:     `[{"id": "WF16", "allowed_rewrites": ["LINK"], "src_types": ["*"], "tgt_types": ["*"], "src_port": "projected-to", "tgt_port": "rendered-as"}]`,
 			want:    []string{`color "projection" of declared port`, "is not in port_color_compatibility.port_colors"},
 		},
 	}
