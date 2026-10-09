@@ -55,7 +55,7 @@ func EncodeFiber(state graph.GraphState, kernelURN graph.URN, enc *Encoder) HV {
 	}
 	nodeURNs := NodesInKernel(state, kernelURN)
 	vectors := make([]HV, 0, len(nodeURNs))
-	
+
 	encodedBatch := enc.EncodeNodes(state, nodeURNs)
 	for _, urn := range nodeURNs {
 		vectors = append(vectors, encodedBatch[urn])
@@ -292,7 +292,7 @@ func shardPrefixToKernelMap(state graph.GraphState, kernels []graph.URN) map[str
 		if !ok || strings.TrimSpace(prefix) == "" {
 			continue
 		}
-		
+
 		for _, rel := range state.Relations {
 			if rel.SrcURN == shardURN && rel.SrcPort == "routes-to" {
 				if kernelURN, hit := kernelSet[rel.TgtURN.String()]; hit {

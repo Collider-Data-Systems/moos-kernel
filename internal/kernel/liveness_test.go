@@ -706,7 +706,7 @@ func TestApplyProgram_M12_IntraBatchADDThenKernelAuthorityMUTATE_Rejected(t *tes
 			RewriteType: graph.MUTATE,
 			Actor:       "urn:moos:agent:claude",
 			TargetURN:   "urn:moos:program:freshly-baked", // created in envelope 1
-			Field:       "target_t",                        // authority_scope=kernel per type spec
+			Field:       "target_t",                       // authority_scope=kernel per type spec
 			NewValue:    200.0,
 		},
 	}
