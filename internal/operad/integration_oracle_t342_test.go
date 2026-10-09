@@ -89,6 +89,34 @@ func TestIntegrationOracle_ProductionOnlyHasTeeth_t342(t *testing.T) {
 	}
 }
 
+// TestIntegrationOracle_OracleBranchHasTeeth_t342: under the oracle, the
+// frozen 98f2ccc gate's verdict counts. 4.0.7 without its matrix is still a
+// pinned legacy merge, and the frozen gate rejects every declared pair whose
+// ends are coloured, while production (equality) admits them, so the check
+// must report those pairs. A check that skipped the oracle would not.
+func TestIntegrationOracle_OracleBranchHasTeeth_t342(t *testing.T) {
+	var reg *Registry
+	var err error
+	captureLog(t, func() {
+		reg, err = LoadRegistry(writeOntology(t, tableOntology(t, "4.0.7", pairs407, overrides407, nil)))
+	})
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if !frozenOracleApplies(reg) || oracleMode(reg) != "98f2ccc oracle" {
+		t.Fatalf("mode %q; want the 98f2ccc oracle for pinned 4.0.7", oracleMode(reg))
+	}
+	n, problems := declaredPairProblems(t, reg, overrides407)
+	if n != 35 || len(problems) != 34 {
+		t.Errorf("%d declared pairs, %d problems; want 35 and 34 (every pair with coloured ends, with no matrix for the frozen gate)", n, len(problems))
+	}
+	for _, p := range problems {
+		if !strings.Contains(p, ": 98f2ccc ") || !strings.Contains(p, ", t342 <nil>") {
+			t.Errorf("want the frozen gate rejecting and production admitting; got %q", p)
+		}
+	}
+}
+
 // TestIntegrationOracle_PinnedAndLegacyKeepTheOracle_t342: the frozen
 // oracle still judges the pinned versions and every legacy-merge ontology
 // — including a later one that adds a pair colored in its own map.

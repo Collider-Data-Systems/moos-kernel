@@ -69,6 +69,14 @@ func TestLoadRegistry_ColorSectionDuplicateKeys_Rejected_t342(t *testing.T) {
 			want: []string{`port_color_compatibility: duplicate key "port_colors"`},
 		},
 		{
+			// json.Unmarshal folds field names the Unicode way: U+017F (ſ)
+			// matches "s", so it reads this key as port_colors too. An
+			// ASCII-only case fold would let the repeat through.
+			name: "port_colors key repeated in a Unicode case fold (ſ = s)",
+			body: colorSectionOntology(`{"port_colors": ["auth"], "port_colorſ": ["auth", "topology"], "matrix": {}}`, ""),
+			want: []string{`port_color_compatibility: duplicate key "port_colorſ"`, `the same key as the earlier "port_colors"`},
+		},
+		{
 			name: "port_color_compatibility repeated at the top level",
 			body: `{"version": "t342-dupkeys", "types": {}, "rewrite_categories": [],
 				"port_color_compatibility": {"matrix": {}, "port_color_map": {"hosts": "topology"}},
@@ -147,6 +155,22 @@ func TestLoadRegistry_DuplicateKeysOutsideColorMaps_Load_t342(t *testing.T) {
 		if err := reg.ValidateLINK(linkEnvelope(p)); err != nil {
 			t.Errorf("%s (%s, %s): %v", p.wf, p.src, p.tgt, err)
 		}
+	}
+}
+
+// TestLoadRegistry_PortNamesAreExact_t342: port names are map keys, and
+// json.Unmarshal keeps "hosts" and "Hosts" apart, so a port_color_map with
+// both loads. The repeat check compares ports exactly, never by case.
+func TestLoadRegistry_PortNamesAreExact_t342(t *testing.T) {
+	body := colorSectionOntology(`{"matrix": {}, "port_color_map": {"hosts": "topology", "hosted-on": "topology", "Hosts": "auth"}}`, "")
+	var reg *Registry
+	var err error
+	captureLog(t, func() { reg, err = LoadRegistry(writeOntology(t, body)) })
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if reg.PortColors["hosts"] != graph.ColorTopology || reg.PortColors["Hosts"] != graph.ColorAuth {
+		t.Errorf("hosts/Hosts = %q/%q, want topology/auth", reg.PortColors["hosts"], reg.PortColors["Hosts"])
 	}
 }
 
