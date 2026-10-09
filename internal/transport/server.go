@@ -525,13 +525,19 @@ func (s *Server) handleGetPortColors(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{})
 		return
 	}
-	// Both halves of the §12 gate (moos-kernel#50): the color×color matrix
-	// (§12.2) and the merged port-name→color map (§12.1, defaults +
-	// port_color_map overrides, "" = explicit exemption) — so envelope
-	// authors can introspect exactly what a fail-closed rejection consulted.
+	// The §12 color gate (moos-kernel#50, t342) so envelope authors can
+	// introspect exactly what a fail-closed rejection consulted: port_colors
+	// is the port-name→color map the gate reads (§12.1); color_rule is the
+	// gate's rule — "equality", both ports must share one color (t342
+	// ruling 1); color_source says whether port_colors is the ontology's own
+	// map alone or that map laid over the kernel's frozen legacy table (t342
+	// ruling 6). matrix is the ontology's §12.2 matrix as loaded, served for
+	// display; the gate no longer consults it.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"matrix":      s.registry.PortColorMatrix,
-		"port_colors": s.registry.PortColors,
+		"matrix":       s.registry.PortColorMatrix,
+		"port_colors":  s.registry.PortColors,
+		"color_rule":   operad.ColorRule,
+		"color_source": s.registry.PortColorSource,
 	})
 }
 

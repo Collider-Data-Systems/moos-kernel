@@ -15,7 +15,8 @@ import (
 //
 // SCOPE — deliberately NOT re-testing the port_color_map merge itself.
 // loader_test.go already covers that surface (TestLoadRegistry_PortColorMapOverride
-// asserts override-wins, new-port-added, "" exemption, AND untouched-default;
+// asserts override-wins, new-port-added AND untouched-default; "" is a load
+// error since t342 ruling 2;
 // *_UnknownColorErrors and *_NullColorErrors cover the load-error paths). #64
 // ask 2 called it "untested today", but it is tested — with SYNTHETIC ports.
 // What was genuinely missing is the member-of specifics:
@@ -34,8 +35,9 @@ import (
 
 // wf02Ontology declares WF02 governance with BOTH additional pairs the 4.0.x
 // line carries (delegates-to v3.13, member-of v4.0.4) and colors member-of /
-// has-member via the port_color_map override (member-of is absent from
-// DefaultPortColors, so the override is what makes the pair loadable).
+// has-member via the port_color_map override (member-of is absent from the
+// frozen legacyPortColors table, t342 ruling 6, so the override is what makes
+// the pair loadable).
 const wf02Ontology = `{
 	"version": "4.0.4",
 	"types": {"s2_infrastructure": [], "s1_grammar": [], "interaction_nodes": []},

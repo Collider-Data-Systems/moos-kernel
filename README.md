@@ -86,7 +86,7 @@ Served on `--listen` (default `:8000`), CORS-wrapped.
 | `/fold`, `/fold/stream` | GET | full folded state (+ SSE) |
 | `/rewrites` | POST | submit one rewrite envelope (through both gates) |
 | `/programs` | POST | submit an atomic batch of envelopes (all-or-nothing) |
-| `/operad/node-types`, `/operad/rewrite-categories`, `/operad/port-colors` | GET | registry introspection |
+| `/operad/node-types`, `/operad/rewrite-categories`, `/operad/port-colors` | GET | registry introspection; `/operad/port-colors` serves `port_colors`, `matrix` (display only), `color_rule` (`equality`: a LINK's two ports must share one color, t342) and `color_source` (`ontology` or `ontology+kernel-legacy`) |
 | `/hdc/*` | GET | derived HDC views (similarity-matrix, eigenvalues, fiedler, fiber, crosswalk, …) |
 | `/twin/ingest`, `/twin/status` | POST / GET | M9 twin-kernel adjoint sync |
 | `/t-hook/evaluate/{urn}`, `/t-hook/evaluate` | GET / POST | §M14 predicate evaluation (single + batch) |

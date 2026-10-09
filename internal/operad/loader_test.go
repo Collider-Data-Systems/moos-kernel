@@ -77,18 +77,25 @@ func writeOntology(t *testing.T, body string) string {
 }
 
 // TestParseColorMatrix_ValueKinds covers the four cell encodings the loaded
-// ontology uses (bool true/false, "wf15_only", "sink_only") plus the
-// junk-string fallback — previously untested.
+// ontology uses (bool true/false, "wf15_only", "sink_only"). A junk string
+// used to fall back to false; since t342 it is a load error
+// (loader_closure_t342_test.go).
 func TestParseColorMatrix_ValueKinds(t *testing.T) {
-	m := parseColorMatrix(map[string]map[string]any{
+	declared, err := declaredPortColors(nil)
+	if err != nil {
+		t.Fatalf("declaredPortColors(nil): %v", err)
+	}
+	m, err := parseColorMatrix(map[string]map[string]any{
 		"workflow": {
 			"workflow":   true,
 			"projection": "sink_only",
 			"semantic":   "wf15_only",
 			"auth":       false,
-			"storage":    "garbage",
 		},
-	})
+	}, declared)
+	if err != nil {
+		t.Fatalf("parseColorMatrix: %v", err)
+	}
 	if !m.Allowed(graph.ColorWorkflow, graph.ColorWorkflow, graph.WF19) {
 		t.Errorf("bool true should parse to allowed")
 	}
@@ -105,7 +112,10 @@ func TestParseColorMatrix_ValueKinds(t *testing.T) {
 		t.Errorf("bool false should parse to rejected")
 	}
 	if m.Allowed(graph.ColorWorkflow, graph.ColorStorage, graph.WF19) {
-		t.Errorf("unrecognized string should parse to rejected")
+		t.Errorf("absent cell should reject")
+	}
+	if _, err := parseColorMatrix(map[string]map[string]any{"workflow": {"storage": "garbage"}}, declared); err == nil {
+		t.Errorf("unrecognized string cell should be a load error (t342 closure)")
 	}
 	if m.Allowed(graph.ColorAuth, graph.ColorAuth, graph.WF19) {
 		t.Errorf("missing src row should reject")
@@ -131,8 +141,10 @@ func TestLoadRegistry_PortColors_DefaultsWhenKeyAbsent(t *testing.T) {
 }
 
 // TestLoadRegistry_PortColorMapOverride: the optional ontology object can
-// recolor an existing port, add a new one, and declare an exemption — all
-// merged over the defaults without a kernel release.
+// recolor an existing port and add a new one — merged over the frozen legacy
+// table without a kernel release while the ontology's own map is partial
+// (t342 ruling 6). The "" exemption entry this test used to carry is now a
+// load error (t342 ruling 2, loader_closure_t342_test.go).
 func TestLoadRegistry_PortColorMapOverride(t *testing.T) {
 	path := writeOntology(t, `{
 		"version": "4.0.2-test",
@@ -142,8 +154,7 @@ func TestLoadRegistry_PortColorMapOverride(t *testing.T) {
 			"matrix": {},
 			"port_color_map": {
 				"opens-on": "topology",
-				"future-port": "auth",
-				"weird-port": ""
+				"future-port": "auth"
 			}
 		}
 	}`)
@@ -157,8 +168,8 @@ func TestLoadRegistry_PortColorMapOverride(t *testing.T) {
 	if got := reg.PortColors["future-port"]; got != graph.ColorAuth {
 		t.Errorf("new port lost: future-port = %q, want auth", got)
 	}
-	if got, ok := reg.PortColors["weird-port"]; !ok || got != "" {
-		t.Errorf("explicit exemption lost: weird-port = (%q, %v), want (\"\", true)", got, ok)
+	if reg.PortColorSource != PortColorSourceLegacyMerge {
+		t.Errorf("PortColorSource = %q, want %q (no declared pairs → legacy merge)", reg.PortColorSource, PortColorSourceLegacyMerge)
 	}
 	if got := reg.PortColors["governs"]; got != graph.ColorAuth {
 		t.Errorf("untouched default lost: governs = %q, want auth", got)
@@ -187,9 +198,10 @@ func TestLoadRegistry_PortColorMap_UnknownColorErrors(t *testing.T) {
 	}
 }
 
-// TestLoadRegistry_PortColorMap_NullColorErrors: JSON null must not alias
-// onto the "" exemption (adversarial-review finding on #50). A None-emitting
-// script would otherwise silently exempt a port from the matrix check.
+// TestLoadRegistry_PortColorMap_NullColorErrors: JSON null is a load error
+// (adversarial-review finding on #50) — a None-emitting script must not
+// leave a port silently uncolored. Since t342 ruling 2 there is no ""
+// exemption for null to alias onto either; "" is itself an error.
 func TestLoadRegistry_PortColorMap_NullColorErrors(t *testing.T) {
 	path := writeOntology(t, `{
 		"version": "4.0.2-test",
@@ -207,8 +219,8 @@ func TestLoadRegistry_PortColorMap_NullColorErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), "null") || !strings.Contains(err.Error(), "opens-on") {
 		t.Errorf("error should name null and the port; got %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), `""`) {
-		t.Errorf("error should point at the \"\" exemption syntax; got %q", err.Error())
+	if strings.Contains(err.Error(), "exemption") {
+		t.Errorf("error must not suggest the retired \"\" exemption (t342 ruling 2); got %q", err.Error())
 	}
 }
 

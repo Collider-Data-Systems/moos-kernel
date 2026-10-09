@@ -9,14 +9,16 @@ import (
 )
 
 // ------------------------------------------------------------------
-// §12.2 color gate — fail-closed behavior (moos-kernel#50)
+// §12.2 color gate — fail-closed behavior (moos-kernel#50), strict color
+// equality (t342 ruling 1), no "" exemption (t342 ruling 2)
 // ------------------------------------------------------------------
 
 // buildColorGateRegistry declares one WF whose pair uses ports that are
-// deliberately NOT in DefaultPortColors, one WF on the explicit exemption,
-// and one WF with a declared pair whose colors clash under the fixture
-// matrix. The matrix mirrors the loaded ontology's workflow→workflow entry
-// only, so anything else color-checked is rejected by Allowed().
+// deliberately NOT in the color map, the WF08 bound-to/binds pair (the
+// 98f2ccc "" exemption, topology/topology since t342 ruling 2), and one WF
+// with a declared pair whose two ends carry different colors (auth/topology).
+// The matrix is left empty: since t342 ruling 1 the gate admits equal colors
+// only and never consults it.
 func buildColorGateRegistry() *Registry {
 	reg := EmptyRegistry()
 
@@ -29,7 +31,7 @@ func buildColorGateRegistry() *Registry {
 		TgtPort:         "mystic-target",
 	}
 
-	// WF08 shape: bound-to is the documented ambiguous exemption.
+	// WF08 shape: bound-to/binds, topology on both ends.
 	reg.RewriteCategories["WF08"] = RewriteCategorySpec{
 		ID:              "WF08",
 		Name:            "Binding",
@@ -38,18 +40,13 @@ func buildColorGateRegistry() *Registry {
 		TgtPort:         "binds",
 	}
 
-	// Declared pair with resolvable colors (auth→topology) that the fixture
-	// matrix does not allow.
+	// Declared pair with resolvable but different colors (auth→topology).
 	reg.RewriteCategories["WF96"] = RewriteCategorySpec{
 		ID:              "WF96",
-		Name:            "Colored but incompatible",
+		Name:            "Colored but mismatched",
 		AllowedRewrites: []graph.RewriteType{graph.LINK},
 		SrcPort:         "governs",
 		TgtPort:         "hosted-on",
-	}
-
-	reg.PortColorMatrix[graph.ColorWorkflow] = map[graph.PortColor]colorCompat{
-		graph.ColorWorkflow: compatAllowed,
 	}
 	return reg
 }
@@ -81,12 +78,14 @@ func TestValidateLINK_DeclaredPairUnknownColor_FailsClosed(t *testing.T) {
 	}
 }
 
-// TestValidateLINK_ExemptPortSkipsMatrix: bound-to is explicitly mapped to
-// the empty color (ambiguous compute-or-storage by doctrine). The matrix
-// check must be skipped — even though the fixture matrix has no entry that
-// would allow it.
-func TestValidateLINK_ExemptPortSkipsMatrix(t *testing.T) {
+// TestValidateLINK_BoundToIsTopology_t342: WF08 bound-to/binds was admitted
+// through the "" exemption up to 98f2ccc; since t342 ruling 2 bound-to is
+// topology and the pair is admitted as topology = topology.
+func TestValidateLINK_BoundToIsTopology_t342(t *testing.T) {
 	reg := buildColorGateRegistry()
+	if got := reg.PortColors["bound-to"]; got != graph.ColorTopology {
+		t.Fatalf("bound-to color = %q, want topology", got)
+	}
 	env := graph.Envelope{
 		RewriteType:     graph.LINK,
 		RewriteCategory: "WF08",
@@ -94,14 +93,36 @@ func TestValidateLINK_ExemptPortSkipsMatrix(t *testing.T) {
 		TgtPort:         "binds",
 	}
 	if err := reg.ValidateLINK(env); err != nil {
-		t.Fatalf("explicitly exempt port should skip the matrix check; got: %v", err)
+		t.Fatalf("WF08 bound-to/binds (topology = topology) should be admitted; got: %v", err)
 	}
 }
 
-// TestValidateLINK_ColorIncompatibilityRejected: both ports resolve
-// (auth→topology) but the fixture matrix has no auth row — Allowed() is
-// fail-closed, so the LINK is rejected with the §12.2 message.
-func TestValidateLINK_ColorIncompatibilityRejected(t *testing.T) {
+// TestValidateLINK_EmptyColorFailsClosed_t342: the "" exemption branch is
+// gone (t342 ruling 2). A hand-built registry that still maps a port to the
+// empty color (the loader refuses "") is rejected fail-closed, not admitted.
+func TestValidateLINK_EmptyColorFailsClosed_t342(t *testing.T) {
+	reg := buildColorGateRegistry()
+	reg.PortColors["bound-to"] = ""
+	env := graph.Envelope{
+		RewriteType:     graph.LINK,
+		RewriteCategory: "WF08",
+		SrcPort:         "bound-to",
+		TgtPort:         "binds",
+	}
+	err := reg.ValidateLINK(env)
+	if err == nil {
+		t.Fatalf("an empty color must no longer exempt the pair; got nil")
+	}
+	for _, want := range []string{"no declared color", `src "bound-to"`, "empty color", "t342 ruling 2", "fail-closed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q; got %q", want, err.Error())
+		}
+	}
+}
+
+// TestValidateLINK_ColorMismatchRejected: both ports resolve to different
+// colors (auth→topology), so equality rejects with the §12.2 / ruling-1 text.
+func TestValidateLINK_ColorMismatchRejected(t *testing.T) {
 	reg := buildColorGateRegistry()
 	env := graph.Envelope{
 		RewriteType:     graph.LINK,
@@ -111,10 +132,35 @@ func TestValidateLINK_ColorIncompatibilityRejected(t *testing.T) {
 	}
 	err := reg.ValidateLINK(env)
 	if err == nil {
-		t.Fatalf("expected color-incompatibility rejection (auth→topology absent from fixture matrix); got nil")
+		t.Fatalf("expected color mismatch rejection (auth vs topology); got nil")
 	}
-	if !strings.Contains(err.Error(), "§12.2") {
-		t.Errorf("error should cite §12.2; got %q", err.Error())
+	for _, want := range []string{"§12.2", "t342 ruling 1", "governs (auth)", "hosted-on (topology)", "WF96"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q; got %q", want, err.Error())
+		}
+	}
+}
+
+// TestValidateLINK_GateIgnoresMatrix_t342: the gate never consults the
+// matrix (t342 ruling 1). A matrix that ALLOWS auth→topology (the 4.0.7
+// cell) still rejects the mismatched pair, and an EMPTY matrix still admits
+// an equal-colored pair.
+func TestValidateLINK_GateIgnoresMatrix_t342(t *testing.T) {
+	reg := buildColorGateRegistry()
+	reg.PortColorMatrix[graph.ColorAuth] = map[graph.PortColor]colorCompat{graph.ColorTopology: compatAllowed}
+	if err := reg.ValidateLINK(graph.Envelope{
+		RewriteType: graph.LINK, RewriteCategory: "WF96", SrcPort: "governs", TgtPort: "hosted-on",
+	}); err == nil {
+		t.Errorf("auth→topology must be rejected even when the matrix allows it")
+	}
+
+	wf := buildTestRegistry()
+	wf.PortColorMatrix = make(PortColorMatrix)
+	if err := wf.ValidateLINK(graph.Envelope{
+		RewriteType: graph.LINK, RewriteCategory: graph.WF19, SrcPort: "opens-on", TgtPort: "occupied-by",
+		SrcURN: "urn:moos:session:test", TgtURN: "urn:moos:kernel:test",
+	}); err != nil {
+		t.Errorf("workflow→workflow must be admitted with an empty matrix: %v", err)
 	}
 }
 
@@ -162,7 +208,8 @@ func TestResolvePortColors_AbsentPortNamesTheSide(t *testing.T) {
 }
 
 // TestResolvePortColors_NilMapFallsBackToDefaults: a zero-value Registry
-// (no loader involved) still resolves the canonical vocabulary.
+// (no loader involved) still resolves the canonical vocabulary from the
+// frozen legacy table.
 func TestResolvePortColors_NilMapFallsBackToDefaults(t *testing.T) {
 	r := &Registry{}
 	src, tgt, err := r.resolvePortColors("opens-on", "occupied-by")
@@ -174,95 +221,9 @@ func TestResolvePortColors_NilMapFallsBackToDefaults(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------
-// Canonical coverage: every pair declared in ontology v4.0.1 resolves and
-// passes the real matrix shape. Hermetic mirror of the ontology's loaded
-// pairs + true-cells; the MOOS_INTEGRATION test below checks the real file.
-// ------------------------------------------------------------------
-
-// realShapedMatrix mirrors ontology.json v4.0.1
-// port_color_compatibility.matrix true-cells: 7 diagonals (projection→
-// projection is false) plus auth→topology, compute→topology,
-// storage→topology.
-func realShapedMatrix() PortColorMatrix {
-	m := make(PortColorMatrix)
-	for _, c := range []graph.PortColor{
-		graph.ColorAuth, graph.ColorTopology, graph.ColorTransport, graph.ColorCompute,
-		graph.ColorStorage, graph.ColorWorkflow, graph.ColorSemantic,
-	} {
-		m[c] = map[graph.PortColor]colorCompat{c: compatAllowed}
-	}
-	m[graph.ColorAuth][graph.ColorTopology] = compatAllowed
-	m[graph.ColorCompute][graph.ColorTopology] = compatAllowed
-	m[graph.ColorStorage][graph.ColorTopology] = compatAllowed
-	return m
-}
-
-// canonicalPairs is the complete (wf, src_port, tgt_port) inventory of
-// ontology.json v4.0.1 rewrite_categories — every primary pair and every
-// additional_port_pairs entry. If an ontology round adds a pair, the
-// MOOS_INTEGRATION test catches the gap against the real file; this table
-// keeps the invariant hermetic for plain `go test ./...`.
-var canonicalPairs = []struct {
-	wf       graph.RewriteCategory
-	src, tgt string
-}{
-	{"WF01", "owns", "child"},
-	{"WF01", "owns", "owned-by"},
-	{"WF02", "governs", "governed-by"},
-	{"WF02", "delegates-to", "delegated-by"},
-	{"WF03", "hosts", "hosted-on"},
-	{"WF04", "contains", "contained-in"},
-	{"WF05", "exposes", "exposed-by"},
-	{"WF06", "connects-to", "connected-to"},
-	{"WF07", "participates", "participated-by"},
-	{"WF07", "anchors", "anchor"},
-	{"WF08", "bound-to", "binds"},
-	{"WF09", "computes-on", "computed-by"},
-	{"WF10", "persisted-in", "persists"},
-	{"WF11", "synced-via", "sync-target"},
-	{"WF12", "provides-kb", "kb-source"},
-	{"WF13", "promotes-to", "promotion-target"},
-	{"WF14", "implements", "implemented-by"},
-	{"WF15", "{semantic}", "{semantic}"},
-	{"WF16", "routes-to", "routed-from"},
-	{"WF17", "triggers", "triggered-by"},
-	{"WF18", "composes", "composed-by"},
-	{"WF18", "spans", "spanned-by"},
-	{"WF19", "opens-on", "occupied-by"},
-	{"WF19", "has-occupant", "is-occupant-of"},
-	{"WF19", "pins-urn", "pinned-by-session"},
-	{"WF19", "filtered-by", "filters-session"},
-	{"WF19", "mounts-tool", "tool-mounted-in-session"},
-	{"WF19", "has-purpose", "purpose-of-session"},
-	{"WF19", "presents-as", "presented-by"},
-	{"WF20", "promotes", "promoted-from"},
-	{"WF21", "causes", "caused-by"},
-}
-
-// TestDefaultPortColors_CoverCanonicalOntologyPairs is the flip-safety
-// invariant: with the gate fail-closed, every canonical pair must either
-// resolve to matrix-compatible colors or be an explicit exemption. This is
-// what guarantees #50's step 3 ("only then flip") does not reject the live
-// identity spine.
-func TestDefaultPortColors_CoverCanonicalOntologyPairs(t *testing.T) {
-	reg := EmptyRegistry()
-	reg.PortColorMatrix = realShapedMatrix()
-	for _, p := range canonicalPairs {
-		src, tgt, err := reg.resolvePortColors(p.src, p.tgt)
-		if err != nil {
-			t.Errorf("%s (%s, %s): no color — DefaultPortColors incomplete: %v", p.wf, p.src, p.tgt, err)
-			continue
-		}
-		if src == "" || tgt == "" {
-			continue // explicit exemption (bound-to) — skip matrix by design
-		}
-		if !reg.PortColorMatrix.Allowed(src, tgt, p.wf) {
-			t.Errorf("%s (%s, %s): colors %s→%s not allowed by the real-shaped matrix — flipping fail-closed would reject this live pair",
-				p.wf, p.src, p.tgt, src, tgt)
-		}
-	}
-}
+// The hermetic declared-pair inventories (4.0.7, 4.0.8, mtdc-2.0.0) and the
+// equivalence proof against the 98f2ccc matrix gate live in
+// color_equality_t342_test.go; they replace the v4.0.1 canonicalPairs table.
 
 // ------------------------------------------------------------------
 // Integration: the same invariant against the real sibling ontology.json.
@@ -279,25 +240,15 @@ func TestIntegration_ColorGate_CoversAllDeclaredOntologyPairs(t *testing.T) {
 		t.Fatalf("LoadRegistry(%s): %v", path, err)
 	}
 	for wf, spec := range reg.RewriteCategories {
-		pairs := make([][2]string, 0, 1+len(spec.AdditionalPortPairs))
-		if spec.SrcPort != "" || spec.TgtPort != "" {
-			pairs = append(pairs, [2]string{spec.SrcPort, spec.TgtPort})
-		}
-		for _, ap := range spec.AdditionalPortPairs {
-			pairs = append(pairs, [2]string{ap.SrcPort, ap.TgtPort})
-		}
-		for _, pr := range pairs {
+		for _, pr := range declaredPairs(spec) {
 			src, tgt, err := reg.resolvePortColors(pr[0], pr[1])
 			if err != nil {
 				t.Errorf("%s (%s, %s): unresolved color in loaded registry — fail-closed gate would reject a declared pair: %v",
 					wf, pr[0], pr[1], err)
 				continue
 			}
-			if src == "" || tgt == "" {
-				continue // explicit exemption
-			}
-			if !reg.PortColorMatrix.Allowed(src, tgt, wf) {
-				t.Errorf("%s (%s, %s): %s→%s rejected by the loaded matrix — declared pair would fail the live gate",
+			if src == "" || src != tgt {
+				t.Errorf("%s (%s, %s): colors %q/%q — equality (t342 ruling 1) would reject a declared pair",
 					wf, pr[0], pr[1], src, tgt)
 			}
 		}
